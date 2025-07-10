@@ -32,7 +32,7 @@ deploy_control_plane() {
     echo "Deploying control plane..."
     
     # Génération des certificats SSL
-    ./scripts/generate-certs.sh
+    docker compose -f generate-indexer-certs.yml run --rm generator
     
     # Démarrage des services
     docker compose up -d
