@@ -5,6 +5,7 @@ wazuh-elastic_stack-single.yml
 wazuh-elastic.yml
 wazuh-kibana.yml
 wazuh-manager.yml
+.vault_pass
 *.pyc
 .mypy_cache
 Pipfile.lock
