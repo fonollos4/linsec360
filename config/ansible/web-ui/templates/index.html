@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LinSec360 - Administration</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <header>
+        <div class="logo-container">
+            <img src="logo.svg" alt="LinSec360 Logo" class="logo">
+            <h1>LinSec360</h1>
+        </div>
+        <nav>
+            <ul>
+                <li class="active"><a href="#"><i class="fas fa-home"></i> Tableau de bord</a></li>
+                <li><a href="#"><i class="fas fa-server"></i> Hôtes</a></li>
+                <li><a href="#"><i class="fas fa-shield-alt"></i> Sécurité</a></li>
+                <li><a href="#"><i class="fas fa-chart-bar"></i> Rapports</a></li>
+                <li><a href="#"><i class="fas fa-cog"></i> Configuration</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <main>
+        <div class="dashboard-header">
+            <h2>Tableau de bord</h2>
+            <div class="actions">
+                <button class="btn btn-primary" id="add-host-btn">
+                    <i class="fas fa-plus"></i> Ajouter un hôte
+                </button>
+                <button class="btn btn-success" id="deploy-btn">
+                    <i class="fas fa-rocket"></i> Déployer la configuration
+                </button>
+            </div>
+        </div>
+
+        <div class="stats-container">
+            <div class="stat-card">
+                <div class="stat-icon bg-blue">
+                    <i class="fas fa-server"></i>
+                </div>
+                <div class="stat-info">
+                    <h3>Hôtes Gérés</h3>
+                    <span id="host-count">0</span>
+                </div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-icon bg-green">
+                    <i class="fas fa-shield-alt"></i>
+                </div>
+                <div class="stat-info">
+                    <h3>Hôtes Sécurisés</h3>
+                    <span id="secured-count">0</span>
+                </div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-icon bg-orange">
+                    <i class="fas fa-exclamation-triangle"></i>
+                </div>
+                <div class="stat-info">
+                    <h3>Vulnérabilités</h3>
+                    <span id="vulnerabilities-count">0</span>
+                </div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-icon bg-purple">
+                    <i class="fas fa-sync-alt"></i>
+                </div>
+                <div class="stat-info">
+                    <h3>Dernière Mise à Jour</h3>
+                    <span id="last-update">--/--/----</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="content-section">
+            <h3><i class="fas fa-list"></i> Hôtes Récemment Ajoutés</h3>
+            <div class="table-container">
+                <table id="hosts-table">
+                    <thead>
+                        <tr>
+                            <th>Nom</th>
+                            <th>Adresse IP</th>
+                            <th>Environnement</th>
+                            <th>Statut</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <!-- Les hôtes seront chargés dynamiquement ici -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Formulaire Modale -->
+        <div id="host-modal" class="modal">
+            <div class="modal-content">
+                <span class="close-btn">&times;</span>
+                <h2><i class="fas fa-plus-circle"></i> Ajouter un Nouvel Hôte</h2>
+                
+                <form id="host-form">
+                    <div class="form-group">
+                        <label for="hostname">Nom de l'hôte</label>
+                        <input type="text" id="hostname" name="hostname" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="ip">Adresse IP</label>
+                        <input type="text" id="ip" name="ip" placeholder="192.168.1.100" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="environment">Environnement</label>
+                        <select id="environment" name="environment" required>
+                            <option value="production">Production</option>
+                            <option value="staging">Staging</option>
+                            <option value="development">Développement</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Groupes</label>
+                        <div class="checkbox-group">
+                            <label>
+                                <input type="checkbox" name="groups" value="web"> Serveur Web
+                            </label>
+                            <label>
+                                <input type="checkbox" name="groups" value="db"> Base de Données
+                            </label>
+                            <label>
+                                <input type="checkbox" name="groups" value="app"> Application
+                            </label>
+                            <label>
+                                <input type="checkbox" name="groups" value="storage"> Stockage
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="security-level">Niveau de Sécurité</label>
+                        <select id="security-level" name="security-level">
+                            <option value="low">Bas</option>
+                            <option value="medium" selected>Moyen</option>
+                            <option value="high">Élevé</option>
+                            <option value="critical">Critique</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-actions">
+                        <button type="button" class="btn btn-secondary" id="cancel-btn">Annuler</button>
+                        <button type="submit" class="btn btn-primary">Enregistrer</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </main>
+
+    <footer>
+        <p>LinSec360 &copy; 2023 - Plateforme de Sécurité Linux Holistique</p>
+        <div class="version">Version: 1.0.0</div>
+    </footer>
+
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+</html>

@@ -5,6 +5,7 @@ FROM python:3.13.5-bookworm
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     PYTHONUNBUFFERED=1
+    
 
 ARG ANSIBLE_CORE_VERSION=2.18
 ARG ANSIBLE_VERSION
@@ -21,6 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     jq \
     iputils-ping \
+    expect \
     ca-certificates && \
     apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false && \
     rm -rf /var/lib/apt/lists/* && \
