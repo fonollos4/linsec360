@@ -4,11 +4,13 @@ services:
   ansible:
     build:
       context: config/ansible/
-      dockerfile: docker/Dockerfile
+      dockerfile: Dockerfile
     container_name: ansible
     volumes:
       - ./ansible:/ansible:rw
       # - ~/.ssh:/root/.ssh:ro
+    ports:
+      - "8000:5000"
     depends_on:
       - wazuh.manager
       - wazuh.indexer

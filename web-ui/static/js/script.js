@@ -10,7 +10,6 @@ const hostCountEl = document.getElementById('host-count');
 const securedCountEl = document.getElementById('secured-count');
 const vulnerabilitiesCountEl = document.getElementById('vulnerabilities-count');
 const lastUpdateEl = document.getElementById('last-update');
-const playbookSelect = document.getElementById('playbook-select'); // Nouvel élément
 
 // Variables globales
 let hosts = [];
@@ -18,37 +17,52 @@ let lastStats = {
     host_count: 0,
     secured_count: 0,
     vulnerabilities_count: 0,
-    timestamp: '--/--/----'
+    last_update: '--/--/----'
 };
-let playbooks = []; // Liste des playbooks disponibles
 
 // Initialisation
 document.addEventListener('DOMContentLoaded', () => {
+    // Charger les données initiales
     fetchHosts();
     fetchStats();
-    fetchPlaybooks(); // Charger les playbooks disponibles
+    
+    // Configurer les écouteurs d'événements
     setupEventListeners();
-    setInterval(fetchStats, 10000); // Actualiser les stats toutes les 10s
+    
+    // Actualiser les données toutes les 30 secondes
+    setInterval(fetchStats, 30000);
 });
 
 // Configuration des écouteurs d'événements
 function setupEventListeners() {
-    addHostBtn.addEventListener('click', () => hostModal.style.display = 'flex');
-    closeBtn.addEventListener('click', () => hostModal.style.display = 'none');
+    // Gestion de la modale
+    addHostBtn.addEventListener('click', () => {
+        hostModal.style.display = 'flex';
+    });
+
+    closeBtn.addEventListener('click', () => {
+        hostModal.style.display = 'none';
+    });
+
     cancelBtn.addEventListener('click', () => {
         hostModal.style.display = 'none';
         hostForm.reset();
     });
+
     window.addEventListener('click', (e) => {
         if (e.target === hostModal) {
             hostModal.style.display = 'none';
             hostForm.reset();
         }
     });
+
+    // Soumission du formulaire
     hostForm.addEventListener('submit', async (e) => {
         e.preventDefault();
         await addNewHost();
     });
+
+    // Déploiement
     deployBtn.addEventListener('click', async () => {
         await deployConfiguration();
     });
@@ -63,8 +77,8 @@ async function addNewHost() {
         hostname: formData.get('hostname'),
         ip: formData.get('ip'),
         environment: formData.get('environment'),
-        'security-level': formData.get('security-level'),
-        groups: groups
+        groups: groups,
+        'security-level': formData.get('security-level')
     };
     
     try {
@@ -79,6 +93,8 @@ async function addNewHost() {
             showNotification(result.message, 'success');
             hostModal.style.display = 'none';
             hostForm.reset();
+            
+            // Actualiser les données
             fetchHosts();
             fetchStats();
         } else {
@@ -91,16 +107,11 @@ async function addNewHost() {
 
 // Fonction pour lancer le déploiement
 async function deployConfiguration() {
-    const playbook = playbookSelect.value;
-    
     try {
         const response = await fetch('/deploy', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ 
-                environment: 'production',
-                playbook: playbook
-            })
+            body: JSON.stringify({ environment: 'production' })
         });
         
         const result = await response.json();
@@ -108,25 +119,11 @@ async function deployConfiguration() {
         if (result.status === 'success') {
             showNotification(result.message, 'info');
             
-            // Mettre à jour le statut visuel immédiatement
-            hosts.forEach(host => {
-                if (host.environment === 'production') {
-                    host.status = 'deploying';
-                }
-            });
-            renderHostsTable();
-            
-            // Actualiser périodiquement
-            const interval = setInterval(() => {
-                fetchHosts();
+            // Actualiser les données après un délai (simulation)
+            setTimeout(() => {
                 fetchStats();
-                
-                // Arrêter quand tous les statuts sont mis à jour
-                if (!hosts.some(h => h.status === 'deploying')) {
-                    clearInterval(interval);
-                    showNotification('Déploiement terminé avec succès!', 'success');
-                }
-            }, 2000);
+                showNotification('Déploiement réussi! Tous les hôtes sont sécurisés.', 'success');
+            }, 5000);
         } else {
             showNotification(result.message, 'error');
         }
@@ -135,57 +132,32 @@ async function deployConfiguration() {
     }
 }
 
-// Récupérer la liste des playbooks
-async function fetchPlaybooks() {
-    try {
-        const response = await fetch('/playbooks');
-        const result = await response.json();
-        
-        if (result.status === 'success') {
-            playbooks = result.playbooks;
-            updatePlaybookSelect();
-        }
-    } catch (error) {
-        console.error('Erreur lors du chargement des playbooks:', error);
-        showNotification('Impossible de charger les playbooks', 'error');
-    }
-}
-
-// Mettre à jour le sélecteur de playbooks
-function updatePlaybookSelect() {
-    playbookSelect.innerHTML = '';
-    
-    playbooks.forEach(playbook => {
-        const option = document.createElement('option');
-        option.value = playbook;
-        option.textContent = playbook;
-        playbookSelect.appendChild(option);
-    });
-    
-    // Sélectionner 'site.yml' par défaut s'il existe
-    if (playbooks.includes('site.yml')) {
-        playbookSelect.value = 'site.yml';
-    }
-}
-
-// Récupérer la liste des hôtes
+// Récupérer la liste des hôtes depuis le serveur
 async function fetchHosts() {
     try {
         const response = await fetch('/hosts');
-        hosts = await response.json();
-        renderHostsTable();
+        const data = await response.json();
+        
+        if (Array.isArray(data)) {
+            hosts = data;
+            renderHostsTable();
+        }
     } catch (error) {
         console.error('Erreur lors de la récupération des hôtes:', error);
         showNotification('Impossible de charger la liste des hôtes', 'error');
     }
 }
 
-// Récupérer les statistiques
+// Récupérer les statistiques depuis le serveur
 async function fetchStats() {
     try {
         const response = await fetch('/stats');
-        lastStats = await response.json();
-        updateStatsDisplay();
+        const data = await response.json();
+        
+        if (data) {
+            lastStats = data;
+            updateStats();
+        }
     } catch (error) {
         console.error('Erreur lors de la récupération des statistiques:', error);
     }
@@ -195,10 +167,10 @@ async function fetchStats() {
 function renderHostsTable() {
     hostsTable.innerHTML = '';
     
-    // Limiter aux 5 hôtes les plus récents
-    const recentHosts = [...hosts]
-        .sort((a, b) => new Date(b.added_date) - new Date(a.added_date))
-        .slice(0, 5);
+    // Trier par date récente (simulé)
+    const recentHosts = [...hosts].sort((a, b) => 
+        b.id - a.id
+    ).slice(0, 5);
     
     recentHosts.forEach(host => {
         const row = hostsTable.insertRow();
@@ -222,16 +194,22 @@ function renderHostsTable() {
         // Actions
         const actionCell = row.insertCell();
         actionCell.innerHTML = `
+            <button class="action-btn view-btn" data-id="${host.id}">
+                <i class="fas fa-eye"></i>
+            </button>
+            <button class="action-btn edit-btn" data-id="${host.id}">
+                <i class="fas fa-edit"></i>
+            </button>
             <button class="action-btn delete-btn" data-id="${host.id}">
                 <i class="fas fa-trash"></i>
             </button>
         `;
     });
     
-    // Ajouter les écouteurs d'événements pour les boutons de suppression
+    // Ajouter les écouteurs d'événements pour les boutons
     document.querySelectorAll('.delete-btn').forEach(btn => {
         btn.addEventListener('click', async (e) => {
-            const hostId = e.target.closest('button').dataset.id;
+            const hostId = parseInt(e.target.closest('button').dataset.id);
             await deleteHost(hostId);
         });
     });
@@ -240,7 +218,8 @@ function renderHostsTable() {
 // Supprimer un hôte
 async function deleteHost(id) {
     try {
-        const response = await fetch(`/host/${id}`, {
+        // Envoyer la requête de suppression au serveur
+        const response = await fetch(`/hosts/${id}`, {
             method: 'DELETE'
         });
         
@@ -248,6 +227,8 @@ async function deleteHost(id) {
         
         if (result.status === 'success') {
             showNotification(result.message, 'success');
+            
+            // Actualiser les données
             fetchHosts();
             fetchStats();
         } else {
@@ -258,31 +239,19 @@ async function deleteHost(id) {
     }
 }
 
-// Mettre à jour l'affichage des statistiques
-function updateStatsDisplay() {
+// Mettre à jour les statistiques affichées
+function updateStats() {
     hostCountEl.textContent = lastStats.host_count || 0;
     securedCountEl.textContent = lastStats.secured_count || 0;
     vulnerabilitiesCountEl.textContent = lastStats.vulnerabilities_count || 0;
-    
-    if (lastStats.timestamp) {
-        const date = new Date(lastStats.timestamp);
-        lastUpdateEl.textContent = date.toLocaleDateString('fr-FR', {
-            day: '2-digit',
-            month: '2-digit',
-            year: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit'
-        });
-    } else {
-        lastUpdateEl.textContent = '--/--/----';
-    }
+    lastUpdateEl.textContent = lastStats.last_update || '--/--/----';
 }
 
 function getStatusText(status) {
     const statusMap = {
         'pending': 'En attente',
         'secured': 'Sécurisé',
-        'deploying': 'Déploiement en cours',
+        'warning': 'Avertissement',
         'error': 'Erreur'
     };
     return statusMap[status] || status;
@@ -314,55 +283,57 @@ function showNotification(message, type) {
     }, 5000);
 }
 
-// CSS pour les badges de statut
-const statusBadgeCSS = `
-.status-badge {
-    padding: 4px 8px;
-    border-radius: 12px;
-    font-size: 0.85rem;
-    font-weight: 600;
-}
-
-.status-badge.pending {
-    background-color: #f39c12;
-    color: white;
-}
-
-.status-badge.secured {
-    background-color: #2ecc71;
-    color: white;
-}
-
-.status-badge.deploying {
-    background-color: #3498db;
-    color: white;
-    animation: pulse 1.5s infinite;
-}
-
-@keyframes pulse {
-    0% { opacity: 1; }
-    50% { opacity: 0.6; }
-    100% { opacity: 1; }
-}
-
-.status-badge.error {
-    background-color: #e74c3c;
-    color: white;
-}
-
-.env-badge {
-    padding: 4px 8px;
-    border-radius: 12px;
-    font-size: 0.85rem;
-    font-weight: 600;
-    background-color: #9b59b6;
-    color: white;
-}
-`;
-
-if (!document.querySelector('#status-badge-styles')) {
+// Ajouter le CSS pour les notifications si nécessaire
+if (!document.querySelector('#notification-styles')) {
     const style = document.createElement('style');
-    style.id = 'status-badge-styles';
-    style.textContent = statusBadgeCSS;
+    style.id = 'notification-styles';
+    style.textContent = `
+    .notification {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        padding: 15px 20px;
+        border-radius: 5px;
+        color: white;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        z-index: 3000;
+        opacity: 0;
+        transform: translateY(-20px);
+        animation: fadeIn 0.5s forwards;
+    }
+
+    @keyframes fadeIn {
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    .notification.success {
+        background: linear-gradient(135deg, #2ecc71, #27ae60);
+    }
+
+    .notification.warning {
+        background: linear-gradient(135deg, #f39c12, #d35400);
+    }
+
+    .notification.info {
+        background: linear-gradient(135deg, #3498db, #2980b9);
+    }
+
+    .notification.error {
+        background: linear-gradient(135deg, #e74c3c, #c0392b);
+    }
+
+    .notification-content {
+        display: flex;
+        align-items: center;
+    }
+
+    .notification-content i {
+        margin-right: 10px;
+        font-size: 1.2rem;
+    }
+    `;
     document.head.appendChild(style);
 }

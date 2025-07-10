@@ -4,15 +4,14 @@ from flask import Flask, render_template, request, jsonify, g
 from datetime import datetime
 import subprocess
 import threading
-import yaml
 
-app = Flask(__name__, static_folder='static', static_url_path='/static')
+app = Flask(__name__, static_folder='static', static_url_path='/static', template_folder='templates')
+
 app.secret_key = os.environ.get('FLASK_SECRET', 'supersecretkey')
 
 # Configuration paths
-INVENTORY_DIR = "/ansible/inventories"
+INVENTORY_DIR = "/ansible/inventory"
 ANSIBLE_DIR = "/ansible"
-PLAYBOOKS_DIR = os.path.join(ANSIBLE_DIR, "playbooks")
 LOG_DIR = "/var/log/linsec"
 DATABASE = os.path.join(app.instance_path, 'linsec.db')
 
@@ -49,14 +48,11 @@ def index():
     db = get_db()
     stats = db.execute('SELECT * FROM stats ORDER BY timestamp DESC LIMIT 1').fetchone()
     hosts = db.execute('SELECT * FROM hosts ORDER BY added_date DESC LIMIT 5').fetchall()
-    playbooks = list_playbooks_internal()
     
     return render_template('index.html', 
                            stats=stats or {},
-                           hosts=hosts or [],
-                           playbooks=playbooks)
+                           hosts=hosts or [])
 
-# --- Gestion des hôtes ---
 @app.route('/add-host', methods=['POST'])
 def add_host():
     try:
@@ -94,94 +90,11 @@ def add_host():
             'message': f"Error: {str(e)}"
         }), 500
 
-# --- Gestion des playbooks ---
-@app.route('/playbooks', methods=['GET'])
-def list_playbooks():
-    try:
-        playbooks = list_playbooks_internal()
-        return jsonify({
-            "status": "success",
-            "playbooks": playbooks
-        })
-    except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
-
-def list_playbooks_internal():
-    """Liste les playbooks disponibles dans le répertoire"""
-    os.makedirs(PLAYBOOKS_DIR, exist_ok=True)
-    files = os.listdir(PLAYBOOKS_DIR)
-    return [f for f in files if f.endswith('.yml') or f.endswith('.yaml')]
-
-@app.route('/playbooks', methods=['POST'])
-def add_playbook():
-    try:
-        data = request.json
-        filename = data.get('filename')
-        content = data.get('content', '')
-
-        if not filename or not (filename.endswith('.yml') or filename.endswith('.yaml')):
-            return jsonify({"status": "error", "message": "Filename must end with .yml or .yaml"}), 400
-
-        filepath = os.path.join(PLAYBOOKS_DIR, filename)
-        if os.path.exists(filepath):
-            return jsonify({"status": "error", "message": "Playbook already exists"}), 400
-
-        with open(filepath, 'w') as f:
-            f.write(content)
-
-        return jsonify({"status": "success", "message": f"Playbook {filename} created."})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-@app.route('/playbooks/<playbook_name>', methods=['PUT'])
-def edit_playbook(playbook_name):
-    try:
-        if not (playbook_name.endswith('.yml') or playbook_name.endswith('.yaml')):
-            return jsonify({"status": "error", "message": "Invalid playbook name"}), 400
-
-        filepath = os.path.join(PLAYBOOKS_DIR, playbook_name)
-        if not os.path.exists(filepath):
-            return jsonify({"status": "error", "message": "Playbook not found"}), 404
-
-        data = request.json
-        content = data.get('content', '')
-        with open(filepath, 'w') as f:
-            f.write(content)
-
-        return jsonify({"status": "success", "message": f"Playbook {playbook_name} updated."})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-@app.route('/playbooks/<playbook_name>', methods=['DELETE'])
-def delete_playbook(playbook_name):
-    try:
-        if not (playbook_name.endswith('.yml') or playbook_name.endswith('.yaml')):
-            return jsonify({"status": "error", "message": "Invalid playbook name"}), 400
-
-        filepath = os.path.join(PLAYBOOKS_DIR, playbook_name)
-        if not os.path.exists(filepath):
-            return jsonify({"status": "error", "message": "Playbook not found"}), 404
-
-        os.remove(filepath)
-        return jsonify({"status": "success", "message": f"Playbook {playbook_name} deleted."})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-# --- Déploiement avec sélection de playbook ---
 @app.route('/deploy', methods=['POST'])
 def deploy():
     try:
         environment = request.json.get('environment', 'production')
-        playbook = request.json.get('playbook', 'site.yml')
-
-        # Valide que le playbook existe
-        playbook_path = os.path.join(PLAYBOOKS_DIR, playbook)
-        if not os.path.isfile(playbook_path):
-            return jsonify({"status": "error", "message": f"Playbook {playbook} does not exist"}), 400
-
+        
         # Mettre à jour le statut des hôtes
         db = get_db()
         db.execute(
@@ -189,16 +102,16 @@ def deploy():
             (environment,)
         )
         db.commit()
-
-        # Lancer le déploiement en arrière-plan avec playbook choisi
+        
+        # Lancer le déploiement en arrière-plan
         threading.Thread(
             target=run_ansible_deployment, 
-            args=(environment, playbook)
+            args=(environment,)
         ).start()
-
+        
         return jsonify({
             'status': 'success',
-            'message': f"Deployment of {playbook} to {environment} started successfully!"
+            'message': f"Deployment to {environment} started successfully!"
         })
     except Exception as e:
         return jsonify({
@@ -206,7 +119,6 @@ def deploy():
             'message': f"Deployment failed: {str(e)}"
         }), 500
 
-# --- Gestion des hôtes (suite) ---
 @app.route('/hosts')
 def list_hosts():
     db = get_db()
@@ -257,6 +169,7 @@ def save_host_to_inventory(host_data):
     inventory = {'all': {'children': {}}}
     if os.path.exists(inv_path):
         with open(inv_path, 'r') as f:
+            import yaml
             inventory = yaml.safe_load(f) or inventory
     
     # Ajouter l'hôte aux groupes
@@ -274,14 +187,14 @@ def save_host_to_inventory(host_data):
     with open(inv_path, 'w') as f:
         yaml.dump(inventory, f, default_flow_style=False)
 
-def run_ansible_deployment(environment, playbook):
+def run_ansible_deployment(environment):
     try:
         log_file = os.path.join(LOG_DIR, f"deploy-{environment}-{datetime.now().strftime('%Y%m%d%H%M%S')}.log")
         
         cmd = [
             "ansible-playbook",
             "-i", os.path.join(INVENTORY_DIR, environment, "hosts.yml"),
-            os.path.join(PLAYBOOKS_DIR, playbook),
+            os.path.join(ANSIBLE_DIR, "playbooks", "site.yml"),
             "--extra-vars", f"linsec_env={environment}"
         ]
         
@@ -341,5 +254,4 @@ def update_stats():
 if __name__ == '__main__':
     os.makedirs(app.instance_path, exist_ok=True)
     os.makedirs(LOG_DIR, exist_ok=True)
-    os.makedirs(PLAYBOOKS_DIR, exist_ok=True)
     app.run(host='0.0.0.0', port=5000, debug=True)

@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     jq \
     iputils-ping \
+    sqlite3 \
     expect \
     ca-certificates && \
     apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false && \
@@ -34,22 +35,39 @@ RUN pip3 install --no-cache-dir --upgrade pip wheel && \
 
 # Create and set permissions on directories
 RUN mkdir -p /ansible \
-    /var/log/ansible && \
+    /var/log/ansible \
+    /var/log/linsec && \
     chmod 0755 /ansible /var/log/ansible
 
 # Copy Ansible configuration into the image
-COPY ansible.cfg /etc/ansible/ansible.cfg
+COPY ./control-node/ansible.cfg /etc/ansible/ansible.cfg
 
 # Copy invetory ssh setup script into the image
 COPY setup_ssh_inventory.sh /ansible
 
+# Set working directory
+WORKDIR /app
+
+# Install Python dependencies
+COPY ./web-ui/requirements.txt .
+RUN pip3 install --no-cache-dir -r requirements.txt
+
+# Copy application files
+COPY ./web-ui/ .
+
+# Initialize database
+RUN mkdir -p /app/instance && \
+    sqlite3 /app/instance/linsec.db < schema.sql
+
 # Copy and chmod the entrypoint script
-COPY ./docker/entrypoint.sh /entrypoint.sh
+COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Set working directory to your mounted Ansible project
-WORKDIR /ansible
+# Expose the Flask port
+EXPOSE 5000
 
 # Use entrypoint script as default
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["bash", "-c", "tail -f /dev/null"]
+
+# Start the application
+CMD ["gunicorn", "app:app", "-b", "0.0.0.0:5000", "--workers", "4", "--access-logfile", "/var/log/linsec/access.log"]
