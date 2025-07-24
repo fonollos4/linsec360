@@ -70,4 +70,5 @@ EXPOSE 5000
 ENTRYPOINT ["/entrypoint.sh"]
 
 # Start the application
-CMD ["gunicorn", "app:app", "-b", "0.0.0.0:5000", "--workers", "4", "--access-logfile", "/var/log/linsec/access.log"]
+# CMD ["gunicorn", "app:app", "-b", "0.0.0.0:5000", "--workers", "4", "--access-logfile", "/var/log/linsec/access.log"]
+CMD ["gunicorn", "app:create_app()", "--bind", "0.0.0.0:5000", "--workers", "4", "--access-logfile", "/var/log/linsec/access.log"]
