@@ -3,13 +3,13 @@ from flask import current_app
 
 class Config:
     """Configuration centralisée de l'application"""
-    SECRET_KEY = os.environ.get('FLASK_SECRET', 'supersecretkey')
+    SECRET_KEY = os.environ.get('FLASK_SECRET', '5uperSecr3tkey')
     
     # Répertoires
-    INVENTORY_DIR = "/ansible/inventories"
-    ANSIBLE_DIR = "/ansible"
+    INVENTORY_DIR = "/opt/linsec/taskengine/inventories"
+    ANSIBLE_DIR = "/opt/linsec/taskengine"
     PLAYBOOKS_DIR = os.path.join(ANSIBLE_DIR, "playbooks")
-    LOG_DIR = "/var/log/linsec"
+    LOG_DIR = "/opt/linsec/logs"
     
     @staticmethod
     def get_database_path():

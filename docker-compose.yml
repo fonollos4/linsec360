@@ -3,12 +3,13 @@
 services:
   ansible:
     build:
-      context: config/ansible/
-      dockerfile: Dockerfile
-    container_name: ansible
+      context: .
+      dockerfile: config/ansible/Dockerfile
+    container_name: taskengine.ansible
+    hostname: taskengine.ansible
     volumes:
-      - ./ansible:/ansible:rw
-      # - ~/.ssh:/root/.ssh:ro
+      - ./logs/:/opt/linsec/logs/:rw
+      - ./.ssh:/opt/linsec/.ssh:rw
     ports:
       - "8000:5000"
     depends_on:

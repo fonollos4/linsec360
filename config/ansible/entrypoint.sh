@@ -1,25 +1,36 @@
 #!/bin/bash
 set -euo pipefail
 
-# Generate SSH keys if not present
-if [ ! -f "/root/.ssh/id_ed25519" ]; then
-  echo "Generating SSH key pair..."
-  ssh-keygen -t ed25519 -N "" -f /root/.ssh/id_ed25519
-  echo "Public key:"
-  cat /root/.ssh/id_ed25519.pub
+# Define where to store SSH keys for linsecagent
+SSH_DIR="/opt/linsec/.ssh"
+
+# Ensure the SSH directory exists
+if [ ! -d "$SSH_DIR" ]; then
+  mkdir -p "$SSH_DIR"
+  chown linsecagent:linsecagent "$SSH_DIR"
+  chmod 700 "$SSH_DIR"
 fi
+
+# # Generate SSH keys if not present
+# if [ ! -f "$SSH_DIR/id_ed25519" ]; then
+#   # echo "Generating SSH key pair for linsecagent..."
+#   # ssh-keygen -t ed25519 -N "" -f "$SSH_DIR/id_ed25519"
+#   # chown linsecagent:linsecagent "$SSH_DIR/id_ed25519" "$SSH_DIR/id_ed25519.pub"
+#   # chmod 600 "$SSH_DIR/id_ed25519"
+#   # chmod 644 "$SSH_DIR/id_ed25519.pub"
+#   echo "Public key:"
+#   cat "$SSH_DIR/id_ed25519.pub"
+# fi
 
 # Generate Ansible vault password if needed
-if [ ! -f "/ansible/.vault_pass" ]; then
+if [ ! -f "/opt/linsec/taskengine/.vault_pass" ]; then
   echo "Generating Ansible Vault password..."
-  openssl rand -base64 32 > /ansible/.vault_pass
-  chmod 600 /ansible/.vault_pass
+  openssl rand -base64 32 > /opt/linsec/taskengine/.vault_pass
+  chmod 600 /opt/linsec/taskengine/.vault_pass
 fi
 
-# Fix permissions for mounted volumes
-chmod -R 755 /ansible
-find /ansible -type d -exec chmod 755 {} \;
-find /ansible -type f -exec chmod 644 {} \;
-
-# Execute command
-exec "$@"
+# Start the Flask app with Gunicorn
+exec gunicorn "app:create_app()" \
+  --bind 0.0.0.0:5000 \
+  --workers 4 \
+  --access-logfile /opt/linsec/logs/access.log
