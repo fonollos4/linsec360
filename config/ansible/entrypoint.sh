@@ -11,16 +11,16 @@ if [ ! -d "$SSH_DIR" ]; then
   chmod 700 "$SSH_DIR"
 fi
 
-# # Generate SSH keys if not present
-# if [ ! -f "$SSH_DIR/id_ed25519" ]; then
-#   # echo "Generating SSH key pair for linsecagent..."
-#   # ssh-keygen -t ed25519 -N "" -f "$SSH_DIR/id_ed25519"
-#   # chown linsecagent:linsecagent "$SSH_DIR/id_ed25519" "$SSH_DIR/id_ed25519.pub"
-#   # chmod 600 "$SSH_DIR/id_ed25519"
-#   # chmod 644 "$SSH_DIR/id_ed25519.pub"
-#   echo "Public key:"
-#   cat "$SSH_DIR/id_ed25519.pub"
-# fi
+# Generate SSH keys if not present
+if [ ! -f "$SSH_DIR/id_ed25519" ]; then
+  echo "Generating SSH key pair for linsecagent..."
+  sudo ssh-keygen -t ed25519 -N "" -f "$SSH_DIR/id_ed25519"
+  sudo chown linsecagent:linsecagent "$SSH_DIR/id_ed25519" "$SSH_DIR/id_ed25519.pub"
+  sudo chmod 600 "$SSH_DIR/id_ed25519"
+  sudo chmod 644 "$SSH_DIR/id_ed25519.pub"
+  echo "Public key:"
+  cat "$SSH_DIR/id_ed25519.pub"
+fi
 
 # Generate Ansible vault password if needed
 if [ ! -f "/opt/linsec/taskengine/.vault_pass" ]; then

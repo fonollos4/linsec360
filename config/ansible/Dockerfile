@@ -10,8 +10,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     TIMEZONE=Africa/Porto-Novo \
     PYTHONUNBUFFERED=1
     
-ARG AGENT_USER=linsecagent
-ARG ADMIN_USER=linsecadmin
+ARG USER=linsecagent
 ARG ANSIBLE_CORE_VERSION=2.18
 ARG ANSIBLE_VERSION
 
@@ -75,39 +74,30 @@ COPY ./app .
 RUN sqlite3 /opt/linsec/app/instance/linsec.db < /opt/linsec/app/instance/schema.sql
 
 # Create user to avoid use root account
-RUN groupadd -r ${AGENT_USER} && \
-    useradd --no-create-home --shell /bin/bash --gid ${AGENT_USER} ${AGENT_USER} && \
-    groupadd -r ${ADMIN_USER} && \
-    useradd --create-home --shell /bin/bash --gid ${ADMIN_USER} -G sudo ${ADMIN_USER}  && \
-    echo "${ADMIN_USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${ADMIN_USER} && \
-    chmod 0440 /etc/sudoers.d/${ADMIN_USER}
+RUN groupadd -r ${USER} && \
+    useradd --create-home --shell /bin/bash --gid ${USER} -G sudo ${USER}  && \
+    echo "${USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${USER} && \
+    chmod 0440 /etc/sudoers.d/${USER}
 
 # Fix permissions for directories and files
-RUN chown -R ${AGENT_USER}:${AGENT_USER} /opt/linsec && \
-    chown -R ${AGENT_USER}:${AGENT_USER} /opt/linsec/app && \
-    chown -R ${AGENT_USER}:${AGENT_USER} /opt/linsec/taskengine && \
-    chown -R ${AGENT_USER}:${AGENT_USER} /opt/linsec/.ssh && \
-    chown -R ${AGENT_USER}:${AGENT_USER} /opt/linsec/logs/ && \
+RUN chown -R ${USER}:${USER} /opt/linsec && \
+    chown -R ${USER}:${USER} /opt/linsec/app && \
+    chown -R ${USER}:${USER} /opt/linsec/taskengine && \
+    chown -R ${USER}:${USER} /opt/linsec/.ssh && \
+    chown -R ${USER}:${USER} /opt/linsec/logs/ && \
     chmod 700 /opt/linsec && \
     find /opt/linsec -type d -exec chmod 755 {} \; && \
     find /opt/linsec -type f -exec chmod 644 {} \; && \
     find /opt/linsec/.ssh -type d -exec chmod 700 {} \; && \
     find /opt/linsec/.ssh -type f -exec chmod 600 {} \; 
 
-# Generate SSH key pair for linsecagent
-RUN ssh-keygen -t ed25519 -N "" -f /opt/linsec/.ssh/id_ed25519 && \
-  chown ${AGENT_USER}:${AGENT_USER} /opt/linsec/.ssh/id_ed25519 /opt/linsec/.ssh/id_ed25519.pub && \
-  chmod 700 /opt/linsec/.ssh && \
-  chmod 600 /opt/linsec/.ssh/id_ed25519 && \
-  chmod 644 /opt/linsec/.ssh/id_ed25519.pub
-    
 # Copy and chmod the entrypoint script
 COPY ./config/ansible/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # Switch to non-privileged user for runtime
-USER ${ADMIN_USER}
-
+USER ${USER}
+    
 # Expose the Flask port
 EXPOSE 5000
 

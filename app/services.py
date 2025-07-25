@@ -208,8 +208,7 @@ class DeploymentService:
                 "-i", Config.get_inventory_path(environment),
                 Config.get_playbook_path(playbook),
                 "--extra-vars", f"@{env_file}",
-                "--extra-vars", f"@{hosts_file}",
-                "--limit", ",".join(target_hosts)
+                "--extra-vars", f"@{hosts_file}"
             ]
             
             with open(log_file, 'w') as log:

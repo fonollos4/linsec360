@@ -1,9 +1,11 @@
 from flask import render_template, request, jsonify, Response
 from database import DatabaseManager
-from services import (
-    ValidationService, InventoryService, PlaybookService, 
-    DeploymentService, EventService
-)
+from services.deployment_service import DeploymentService
+from services.event_service import EventService
+from services.inventory_service import InventoryService
+from services.playbook_service import PlaybookService
+from services.validation_service import ValidationService
+
 
 def register_routes(app):
     """Enregistrer toutes les routes de l'application"""
