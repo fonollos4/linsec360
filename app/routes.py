@@ -8,7 +8,7 @@ from services.validation_service import ValidationService
 
 
 def register_routes(app):
-    """Enregistrer toutes les routes de l'application"""
+    """Register all app routes"""
     
     @app.route('/')
     def index():
@@ -21,7 +21,7 @@ def register_routes(app):
         """Flux d'événements SSE"""
         return Response(EventService.get_event_stream(), mimetype='text/event-stream')
     
-    # === ROUTES POUR LES HÔTES ===
+    # === ROUTES FOR HOSTS ===
     
     @app.route('/hosts')
     def list_hosts():
@@ -31,31 +31,31 @@ def register_routes(app):
     
     @app.route('/add-host', methods=['POST'])
     def add_host():
-        """Ajouter un nouvel hôte"""
+        """Add a new host"""
         try:
             host_data = {
                 'name': request.form['hostname'],
-                'ip': request.form['ip'],
+                'ip': request.form['ip'], 
                 'environment': request.form['environment'],
                 'security_level': request.form['security-level'],
                 'groups': ','.join(request.form.getlist('groups')),
                 'status': 'pending'
             }
             
-            # Validation de l'IP
+            # IP validation
             if not ValidationService.validate_ip(host_data['ip']):
                 return jsonify({
                     'status': 'error',
                     'message': 'Adresse IP invalide'
                 }), 400
             
-            # Ajouter à la base de données
+            # Add to database
             DatabaseManager.add_host(host_data)
             
-            # Mettre à jour les statistiques
+            # Update statistics
             DatabaseManager.update_stats()
-            
-            # Sauvegarder dans l'inventaire Ansible
+        
+            # Save into the inventory
             InventoryService.save_host_to_inventory(host_data)
             
             return jsonify({
@@ -70,17 +70,17 @@ def register_routes(app):
     
     @app.route('/host/<int:host_id>', methods=['DELETE'])
     def delete_host(host_id):
-        """Supprimer un hôte"""
+        """Delete an host"""
         try:
-            # Supprimer l'hôte de la base de données
+            # Delete host from database
             host_data = DatabaseManager.delete_host(host_id)
             if not host_data:
                 return jsonify({'status': 'error', 'message': 'Hôte non trouvé'}), 404
             
-            # Mettre à jour les statistiques
+            # Update statistics
             DatabaseManager.update_stats()
             
-            # Supprimer de l'inventaire
+            # Remove from inventory
             InventoryService.remove_host_from_inventory(host_data)
             
             return jsonify({
@@ -93,11 +93,11 @@ def register_routes(app):
                 'message': f"Erreur lors de la suppression: {str(e)}"
             }), 500
     
-    # === ROUTES POUR LES PLAYBOOKS ===
+    # === ROUTES FOR PLAYBOOKS ===
     
     @app.route('/playbooks', methods=['GET'])
     def list_playbooks():
-        """Lister tous les playbooks"""
+        """List all playbooks"""
         try:
             playbooks = PlaybookService.list_playbooks()
             return jsonify({
@@ -112,7 +112,7 @@ def register_routes(app):
     
     @app.route('/playbooks', methods=['POST'])
     def add_playbook():
-        """Ajouter un nouveau playbook"""
+        """Add a new playbook"""
         try:
             data = request.json
             filename = data.get('filename')
@@ -131,7 +131,7 @@ def register_routes(app):
     
     @app.route('/playbooks/<playbook_name>', methods=['PUT'])
     def edit_playbook(playbook_name):
-        """Modifier un playbook existant"""
+        """Edit an existing playbook"""
         try:
             data = request.json
             content = data.get('content', '')
@@ -149,7 +149,7 @@ def register_routes(app):
     
     @app.route('/playbooks/<playbook_name>', methods=['DELETE'])
     def delete_playbook(playbook_name):
-        """Supprimer un playbook"""
+        """Delete a playbook"""
         try:
             PlaybookService.delete_playbook(playbook_name)
             
@@ -162,11 +162,11 @@ def register_routes(app):
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)}), 500
     
-    # === ROUTES POUR LES DÉPLOIEMENTS ===
+    # === ROUTES FOR DEPLOYMENTS ===
     
     @app.route('/deploy', methods=['POST'])
     def deploy():
-        """Déployer un playbook sur des hôtes"""
+        """Deploy a playbook on hosts"""
         try:
             data = request.json
             environment = data.get('environment', 'production')
@@ -174,12 +174,12 @@ def register_routes(app):
             target_hosts = data.get('hosts', [])
             target_group = data.get('group', None)
             
-            # Déterminer les hôtes cibles
+            # Determine the target hosts
             target_hosts = DeploymentService.get_target_hosts(
                 environment, target_hosts, target_group
             )
             
-            # Démarrer le déploiement
+            # Start the deployment
             DeploymentService.start_deployment(environment, playbook, target_hosts)
             
             return jsonify({
@@ -197,10 +197,10 @@ def register_routes(app):
                 'message': f"Échec du déploiement: {str(e)}"
             }), 500
     
-    # === ROUTES POUR LES STATISTIQUES ===
+    # === ROUTES FOR STATISTICS ===
     
     @app.route('/stats')
     def get_stats():
-        """Obtenir les statistiques actuelles"""
+        """Get realtime statistics"""
         stats = DatabaseManager.get_latest_stats()
         return jsonify(dict(stats)) if stats else jsonify({})

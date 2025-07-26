@@ -5,7 +5,7 @@ class Config:
     """Configuration centralisée de l'application"""
     SECRET_KEY = os.environ.get('FLASK_SECRET', '5uperSecr3tkey')
     
-    # Répertoires
+    # Directories
     INVENTORY_DIR = "/opt/linsec/taskengine/inventories"
     ANSIBLE_DIR = "/opt/linsec/taskengine"
     PLAYBOOKS_DIR = os.path.join(ANSIBLE_DIR, "playbooks")

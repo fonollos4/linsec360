@@ -32,13 +32,11 @@ class DeploymentService:
 
         DatabaseManager.update_hosts_status(target_hosts, 'deploying')
         EventService.notify_deployment_start(environment, playbook, target_hosts)
-   
-        app = create_app()
-        with app.app_context():
-            threading.Thread(
-                target=DeploymentService._run_ansible_deployment,
-                args=(environment, playbook, target_hosts)
-            ).start()
+
+        threading.Thread(
+            target=DeploymentService._run_ansible_deployment,
+            args=(environment, playbook, target_hosts)
+        ).start()
 
     @staticmethod
     def _run_ansible_deployment(environment, playbook, target_hosts):

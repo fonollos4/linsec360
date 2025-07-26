@@ -9,14 +9,14 @@ def create_app():
     app = Flask(__name__, static_folder='static', static_url_path='/static')
     app.config.from_object(Config)
     
-    # Initialiser la base de données
+    # Initialize database
     app.cli.add_command(init_db_command)
     app.teardown_appcontext(close_db)
     
-    # Enregistrer les routes
+    # Register routes
     register_routes(app)
     
-    # Créer les répertoires nécessaires
+    # Create all necessary directory
     os.makedirs(app.instance_path, exist_ok=True)
     os.makedirs(Config.LOG_DIR, exist_ok=True)
     os.makedirs(Config.PLAYBOOKS_DIR, exist_ok=True)
