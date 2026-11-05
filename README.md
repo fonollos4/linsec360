@@ -42,11 +42,11 @@ $ docker compose -f generate-indexer-certs.yml run --rm generator
 
 - In the foregroud:
 ```
-$ docker compose up
+$ docker compose up --build
 ```
 - In the background:
 ```
-$ docker compose up -d
+$ docker compose up --build -d
 ```
 
 The environment takes about 1 minute to get up (depending on your Docker host) for the first time since Wazuh Indexer must be started for the first time and the indexes and index patterns must be generated.

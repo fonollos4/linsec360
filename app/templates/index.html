@@ -3,291 +3,114 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LinSec360 - Administration</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <title>LinSec360 | Centre de sécurité</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
-<header>
-        <div class="logo-container">
-            <img src="{{ url_for('static', filename='images/logo.jpg') }}" alt="LinSec360 Logo" class="logo">
-            <h1>LinSec360</h1>
+<aside class="sidebar" id="sidebar">
+    <a class="brand" href="/" aria-label="LinSec360 accueil">
+        <img src="{{ url_for('static', filename='images/logo.jpg') }}" alt="">
+        <span>LinSec<strong>360</strong></span>
+    </a>
+    <nav class="side-nav" aria-label="Navigation principale">
+        <button class="nav-item active" data-view="overview"><span class="nav-icon">◫</span><span>Vue d'ensemble</span></button>
+        <button class="nav-item" data-view="hosts"><span class="nav-icon">⌂</span><span>Hôtes</span></button>
+        <button class="nav-item" data-view="playbooks"><span class="nav-icon">{} </span><span>Playbooks</span></button>
+        <button class="nav-item" data-view="deployments"><span class="nav-icon">▶</span><span>Déploiements</span></button>
+    </nav>
+    <a class="wazuh-link" href="https://localhost/app/login" target="_blank" rel="noopener">
+        <span>↗</span> Ouvrir Wazuh
+    </a>
+</aside>
+
+<main class="app-shell">
+    <header class="topbar">
+        <button class="icon-button menu-button" id="menu-button" aria-label="Ouvrir le menu">☰</button>
+        <div>
+            <p class="eyebrow">Centre de sécurité</p>
+            <h1 id="page-title">Vue d'ensemble</h1>
         </div>
-        <nav>
-            <ul>
-                <li class="active"><a href="#"><i class="fas fa-home"></i> Tableau de bord</a></li>
-                <li><a href="hosts"><i class="fas fa-server"></i> Hôtes</a></li>
-                <li><a href="#"><i class="fas fa-shield-alt"></i> Sécurité</a></li>
-                <li><a href="#"><i class="fas fa-file-code"></i> Playbooks</a></li>
-                <li><a href="#"><i class="fas fa-chart-bar"></i> Rapports</a></li>
-                <li><a href="#"><i class="fas fa-cog"></i> Configuration</a></li>
-            </ul>
-        </nav>
+        <div class="topbar-actions">
+            <span class="system-status"><i></i> Système opérationnel</span>
+            <button class="primary-button" id="top-action">+ Ajouter un hôte</button>
+        </div>
     </header>
 
-    <main>
-        <div class="dashboard-header">
-            <h2><i class="fas fa-tachometer-alt"></i> Tableau de bord</h2>
-            <div class="actions">
-                <button class="btn btn-primary" id="add-host-btn">
-                    <i class="fas fa-plus"></i> Ajouter un hôte
-                </button>
+    <div class="content">
+        <section class="view active" data-view-panel="overview">
+            <div class="stats-grid" id="stats-grid"></div>
+            <div class="overview-grid">
+                <article class="panel deploy-panel">
+                    <div class="panel-heading"><div><p class="eyebrow">Automatisation</p><h2>Nouveau déploiement</h2></div></div>
+                    <form id="deploy-form">
+                        <label>Playbook
+                            <select id="playbook-select" required></select>
+                        </label>
+                        <label>Environnement
+                            <select id="environment-select">
+                                <option value="production">Production</option>
+                                <option value="staging">Staging</option>
+                                <option value="development">Développement</option>
+                            </select>
+                        </label>
+                        <label>Cibles
+                            <select id="target-type">
+                                <option value="all">Tous les hôtes de l'environnement</option>
+                                <option value="selected">Hôtes sélectionnés</option>
+                                <option value="group">Groupe</option>
+                            </select>
+                        </label>
+                        <div id="host-selection-container" hidden><div class="host-selection" id="host-selection"></div></div>
+                        <label id="group-selection-container" hidden>Groupe
+                            <select id="group-select"><option value="web">Serveurs Web</option><option value="db">Bases de données</option><option value="app">Applications</option><option value="storage">Stockage</option></select>
+                        </label>
+                        <button class="primary-button full" type="submit">▶ Lancer le déploiement</button>
+                    </form>
+                </article>
+                <article class="panel">
+                    <div class="panel-heading"><div><p class="eyebrow">Infrastructure</p><h2>Hôtes récents</h2></div><button class="text-button" data-go="hosts">Voir tous</button></div>
+                    <div class="table-wrap"><table><thead><tr><th>Hôte</th><th>Adresse IP</th><th>Environnement</th><th>Statut</th></tr></thead><tbody id="overview-hosts"></tbody></table></div>
+                </article>
             </div>
-        </div>
+        </section>
 
-        <div class="stats-container">
-            <div class="stat-card">
-                <div class="stat-icon bg-blue">
-                    <i class="fas fa-server"></i>
-                </div>
-                <div class="stat-info">
-                    <h3>Hôtes Gérés</h3>
-                    <span id="host-count">0</span>
-                </div>
-            </div>
-            
-            <div class="stat-card">
-                <div class="stat-icon bg-green">
-                    <i class="fas fa-shield-alt"></i>
-                </div>
-                <div class="stat-info">
-                    <h3>Hôtes Sécurisés</h3>
-                    <span id="secured-count">0</span>
-                </div>
-            </div>
-            
-            <div class="stat-card">
-                <div class="stat-icon bg-orange">
-                    <i class="fas fa-exclamation-triangle"></i>
-                </div>
-                <div class="stat-info">
-                    <h3>Vulnérabilités</h3>
-                    <span id="vulnerabilities-count">0</span>
-                </div>
-            </div>
-            
-            <div class="stat-card">
-                <div class="stat-icon bg-purple">
-                    <i class="fas fa-sync-alt"></i>
-                </div>
-                <div class="stat-info">
-                    <h3>Dernière Mise à Jour</h3>
-                    <span id="last-update">--/--/----</span>
-                </div>
-            </div>
-        </div>
+        <section class="view" data-view-panel="hosts">
+            <div class="toolbar"><div><p class="eyebrow">Inventaire</p><h2>Hôtes enregistrés</h2></div><button class="primary-button" id="add-host-view-btn">+ Ajouter un hôte</button></div>
+            <article class="panel"><div class="table-wrap"><table><thead><tr><th>Nom</th><th>Adresse IP</th><th>Environnement</th><th>Sécurité</th><th>Groupes</th><th></th></tr></thead><tbody id="hosts-table"></tbody></table></div></article>
+        </section>
 
-        <div class="flex-container">
-            <div class="content-section deploy-section">
-                <h3><i class="fas fa-rocket"></i> Déploiement</h3>
-                <div class="deploy-controls">
-                    <div class="form-group">
-                        <label for="playbook-select">Playbook Ansible</label>
-                        <select id="playbook-select" class="form-control">
-                            <option value="hardening-linux">Hardening Linux</option>
-                            <option value="update-system">Mise à jour système</option>
-                            <option value="firewall-setup">Configuration Firewall</option>
-                        </select>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="environment-select">Environnement</label>
-                        <select id="environment-select" class="form-control">
-                            <option value="production">Production</option>
-                            <option value="staging">Staging</option>
-                            <option value="development">Développement</option>
-                        </select>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="target-type">Cible de déploiement</label>
-                        <select id="target-type" class="form-control">
-                            <option value="all">Tous les hôtes de l'environnement</option>
-                            <option value="selected">Sélectionner des hôtes spécifiques</option>
-                            <option value="group">Déployer sur un groupe</option>
-                        </select>
-                    </div>
-                    
-                    <div id="host-selection-container" style="display: none;">
-                        <div class="host-selection" id="host-selection">
-                            <label>
-                                <input type="checkbox" name="host" value="web01"> web01
-                            </label>
-                            <label>
-                                <input type="checkbox" name="host" value="db01"> db01
-                            </label>
-                            <label>
-                                <input type="checkbox" name="host" value="app01"> app01
-                            </label>
-                            <label>
-                                <input type="checkbox" name="host" value="storage01"> storage01
-                            </label>
-                            <label>
-                                <input type="checkbox" name="host" value="web02"> web02
-                            </label>
-                        </div>
-                        <div class="selection-actions">
-                            <button class="btn btn-secondary" id="select-all">
-                                <i class="fas fa-check-square"></i> Tout sélectionner
-                            </button>
-                            <button class="btn btn-secondary" id="deselect-all">
-                                <i class="fas fa-square"></i> Tout désélectionner
-                            </button>
-                        </div>
-                    </div>
-                    
-                    <div id="group-selection-container" style="display: none;" class="form-group">
-                        <label for="group-select">Sélectionner un groupe</label>
-                        <select id="group-select" class="form-control">
-                            <option value="web">Serveur Web</option>
-                            <option value="db">Base de Données</option>
-                            <option value="app">Application</option>
-                            <option value="storage">Stockage</option>
-                        </select>
-                    </div>
-                    
-                    <button class="btn btn-success deploy-btn" id="deploy-btn">
-                        <i class="fas fa-play"></i> Exécuter le déploiement
-                    </button>
-                </div>
-            </div>
+        <section class="view" data-view-panel="playbooks">
+            <div class="toolbar"><div><p class="eyebrow">Automatisation Ansible</p><h2>Bibliothèque de playbooks</h2></div><button class="primary-button" id="add-playbook-btn">+ Nouveau playbook</button></div>
+            <div class="card-grid" id="playbooks-grid"></div>
+        </section>
 
-            <div class="content-section">
-                <h3><i class="fas fa-list"></i> Hôtes Récemment Ajoutés</h3>
-                <div class="table-container">
-                    <table id="hosts-table">
-                        <thead>
-                            <tr>
-                                <th>Nom</th>
-                                <th>Adresse IP</th>
-                                <th>Environnement</th>
-                                <th>Statut</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr>
-                                <td>web01</td>
-                                <td>192.168.1.10</td>
-                                <td><span class="env-badge">Production</span></td>
-                                <td><span class="status-badge secured">Sécurisé</span></td>
-                                <td>
-                                    <button class="action-btn"><i class="fas fa-eye"></i></button>
-                                    <button class="action-btn"><i class="fas fa-edit"></i></button>
-                                    <button class="action-btn delete-btn"><i class="fas fa-trash"></i></button>
-                                </td>
-                            </tr>
-                            <tr>
-                                <td>db02</td>
-                                <td>192.168.1.20</td>
-                                <td><span class="env-badge">Staging</span></td>
-                                <td><span class="status-badge pending">En attente</span></td>
-                                <td>
-                                    <button class="action-btn"><i class="fas fa-eye"></i></button>
-                                    <button class="action-btn"><i class="fas fa-edit"></i></button>
-                                    <button class="action-btn delete-btn"><i class="fas fa-trash"></i></button>
-                                </td>
-                            </tr>
-                            <tr>
-                                <td>app03</td>
-                                <td>192.168.1.30</td>
-                                <td><span class="env-badge">Développement</span></td>
-                                <td><span class="status-badge error">Erreur</span></td>
-                                <td>
-                                    <button class="action-btn"><i class="fas fa-eye"></i></button>
-                                    <button class="action-btn"><i class="fas fa-edit"></i></button>
-                                    <button class="action-btn delete-btn"><i class="fas fa-trash"></i></button>
-                                </td>
-                            </tr>
-                            <tr>
-                                <td>storage04</td>
-                                <td>192.168.1.40</td>
-                                <td><span class="env-badge">Production</span></td>
-                                <td><span class="status-badge deploying">Déploiement...</span></td>
-                                <td>
-                                    <button class="action-btn"><i class="fas fa-eye"></i></button>
-                                    <button class="action-btn"><i class="fas fa-edit"></i></button>
-                                    <button class="action-btn delete-btn"><i class="fas fa-trash"></i></button>
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <!-- Formulaire Modale -->
-        <div id="host-modal" class="modal">
-            <div class="modal-content">
-                <span class="close-btn">&times;</span>
-                <h2><i class="fas fa-plus-circle"></i> Ajouter un Nouvel Hôte</h2>
-                
-                <form id="host-form">
-                    <div class="form-group">
-                        <label for="hostname">Nom de l'hôte</label>
-                        <input type="text" id="hostname" name="hostname" required>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="ip">Adresse IP</label>
-                        <input type="text" id="ip" name="ip" placeholder="192.168.1.100" required>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="environment">Environnement</label>
-                        <select id="environment" name="environment" required>
-                            <option value="production">Production</option>
-                            <option value="staging">Staging</option>
-                            <option value="development">Développement</option>
-                        </select>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>Groupes</label>
-                        <div class="checkbox-group">
-                            <label>
-                                <input type="checkbox" name="groups" value="web"> Serveur Web
-                            </label>
-                            <label>
-                                <input type="checkbox" name="groups" value="db"> Base de Données
-                            </label>
-                            <label>
-                                <input type="checkbox" name="groups" value="app"> Application
-                            </label>
-                            <label>
-                                <input type="checkbox" name="groups" value="storage"> Stockage
-                            </label>
-                        </div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="security-level">Niveau de Sécurité</label>
-                        <select id="security-level" name="security-level">
-                            <option value="low">Bas</option>
-                            <option value="medium" selected>Moyen</option>
-                            <option value="high">Élevé</option>
-                            <option value="critical">Critique</option>
-                        </select>
-                    </div>
-                    
-                    <div class="form-actions">
-                        <button type="button" class="btn btn-secondary" id="cancel-btn">Annuler</button>
-                        <button type="submit" class="btn btn-primary">Enregistrer</button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    </main>
-
-    <footer>
-        <p>LinSec360 &copy; 2023 - Plateforme de Sécurité Linux Holistique</p>
-        <div class="version">Version: 1.0.0</div>
-    </footer>
-    <div id="loading-overlay" class="loading-overlay">
-        <div class="spinner"></div>
-        <p>Chargement en cours...</p>
+        <section class="view" data-view-panel="deployments">
+            <div class="toolbar"><div><p class="eyebrow">Historique</p><h2>Déploiements</h2></div><button class="secondary-button" id="refresh-deployments">↻ Actualiser</button></div>
+            <article class="panel"><div class="table-wrap"><table><thead><tr><th>ID</th><th>Playbook</th><th>Environnement</th><th>Cibles</th><th>Statut</th><th>Créé le</th></tr></thead><tbody id="deployments-table"></tbody></table></div></article>
+        </section>
     </div>
+</main>
 
-    <script type="module" src="{{ url_for('static', filename='js/script.js') }}"></script>
+<dialog id="host-modal"><form id="host-form" method="dialog">
+    <div class="modal-heading"><div><p class="eyebrow">Inventaire</p><h2>Ajouter un hôte</h2></div><button class="icon-button modal-close" type="button" aria-label="Fermer">×</button></div>
+    <div class="form-grid">
+        <label>Nom d'hôte<input name="hostname" required placeholder="srv-web-01"></label>
+        <label>Adresse IP<input name="ip" required placeholder="192.168.1.10"></label>
+        <label>Environnement<select name="environment"><option value="production">Production</option><option value="staging">Staging</option><option value="development">Développement</option></select></label>
+        <label>Niveau de sécurité<select name="security-level"><option value="standard">Standard</option><option value="high">Élevé</option><option value="critical">Critique</option></select></label>
+        <label class="span-2">Groupes<input name="groups" placeholder="web,linux"></label>
+    </div>
+    <div class="modal-actions"><button class="secondary-button modal-close" type="button">Annuler</button><button class="primary-button" type="submit">Ajouter l'hôte</button></div>
+</form></dialog>
+
+<dialog id="playbook-modal"><form id="playbook-form" method="dialog">
+    <div class="modal-heading"><div><p class="eyebrow">Ansible</p><h2 id="playbook-modal-title">Nouveau playbook</h2></div><button class="icon-button modal-close" type="button" aria-label="Fermer">×</button></div>
+    <label>Nom du fichier<input id="playbook-filename" placeholder="hardening.yml" required></label>
+    <label>Contenu YAML<textarea id="playbook-content" rows="16" spellcheck="false"></textarea></label>
+    <div class="modal-actions"><button class="secondary-button modal-close" type="button">Annuler</button><button class="primary-button" type="submit">Enregistrer</button></div>
+</form></dialog>
+
+<div class="notification-region" id="notifications" aria-live="polite"></div>
+<script type="module" src="{{ url_for('static', filename='js/script.js') }}"></script>
 </body>
 </html>

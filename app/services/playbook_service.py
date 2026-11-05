@@ -4,6 +4,19 @@ from services.validation_service import ValidationService
 
 class PlaybookService:
     @staticmethod
+    def get_playbook(filename):
+        if not ValidationService.validate_playbook_name(filename):
+            raise ValueError("Nom de playbook invalide")
+        filepath = Config.get_playbook_path(filename)
+        if not os.path.isfile(filepath) or os.path.islink(filepath):
+            raise ValueError("Playbook non trouvé")
+        try:
+            with open(filepath, "r", encoding="utf-8") as playbook_file:
+                return playbook_file.read()
+        except UnicodeDecodeError as exc:
+            raise ValueError("Le playbook n'est pas un fichier texte valide") from exc
+
+    @staticmethod
     def list_playbooks():
         os.makedirs(Config.PLAYBOOKS_DIR, exist_ok=True)
         return sorted(

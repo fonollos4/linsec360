@@ -144,6 +144,24 @@ def register_routes(app):
                 "status": "error",
                 "message": "Impossible de créer le playbook",
             }), 500
+
+    @app.route('/playbooks/<playbook_name>', methods=['GET'])
+    def get_playbook(playbook_name):
+        """Get the source of an existing playbook"""
+        try:
+            return jsonify({
+                "status": "success",
+                "filename": playbook_name,
+                "content": PlaybookService.get_playbook(playbook_name),
+            })
+        except ValueError as exc:
+            return jsonify({"status": "error", "message": str(exc)}), 404
+        except Exception:
+            current_app.logger.exception("playbook_read_failed")
+            return jsonify({
+                "status": "error",
+                "message": "Impossible de lire le playbook",
+            }), 500
     
     @app.route('/playbooks/<playbook_name>', methods=['PUT'])
     def edit_playbook(playbook_name):

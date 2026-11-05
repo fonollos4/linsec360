@@ -11,6 +11,27 @@ export const api = {
     hosts: () => requestJson('/hosts'),
     stats: () => requestJson('/stats'),
     playbooks: () => requestJson('/playbooks'),
+    playbook: filename => requestJson(`/playbooks/${encodeURIComponent(filename)}`),
+    deployments: () => requestJson('/deployments'),
+    addPlaybook(filename, content) {
+        return requestJson('/playbooks', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filename, content }),
+        });
+    },
+    updatePlaybook(filename, content) {
+        return requestJson(`/playbooks/${encodeURIComponent(filename)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content }),
+        });
+    },
+    deletePlaybook(filename) {
+        return requestJson(`/playbooks/${encodeURIComponent(filename)}`, {
+            method: 'DELETE',
+        });
+    },
     addHost(formData) {
         const payload = new URLSearchParams();
         for (const [key, value] of formData.entries()) {
