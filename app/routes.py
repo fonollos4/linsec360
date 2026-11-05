@@ -1,10 +1,21 @@
-from flask import render_template, request, jsonify, Response
-from database import DatabaseManager
+import hmac
+import os
+import sqlite3
+
+from flask import (
+    Response,
+    current_app,
+    jsonify,
+    render_template,
+    request,
+    stream_with_context,
+)
+from database import get_db
 from services.deployment_service import DeploymentService
 from services.event_service import EventService
-from services.inventory_service import InventoryService
+from services.host_service import HostService
 from services.playbook_service import PlaybookService
-from services.validation_service import ValidationService
+from services.stats_service import StatsService
 
 
 def register_routes(app):
@@ -19,78 +30,76 @@ def register_routes(app):
     @app.route('/events')
     def events():
         """Flux d'événements SSE"""
-        return Response(EventService.get_event_stream(), mimetype='text/event-stream')
+        return Response(
+            stream_with_context(EventService.get_event_stream()),
+            mimetype='text/event-stream',
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.route('/health')
+    def health():
+        return jsonify({"status": "ok"})
+
+    @app.route('/ready')
+    def ready():
+        try:
+            get_db().execute("SELECT 1 FROM hosts LIMIT 0")
+        except sqlite3.Error:
+            current_app.logger.exception("readiness_check_failed")
+            return jsonify({"status": "not_ready", "dependency": "database"}), 503
+        return jsonify({"status": "ready"})
     
     # === ROUTES FOR HOSTS ===
     
     @app.route('/hosts')
     def list_hosts():
         """Lister tous les hôtes"""
-        hosts = DatabaseManager.get_all_hosts()
-        return jsonify([dict(host) for host in hosts])
+        return jsonify(HostService.list_hosts())
     
     @app.route('/add-host', methods=['POST'])
     def add_host():
         """Add a new host"""
         try:
             host_data = {
-                'name': request.form['hostname'],
-                'ip': request.form['ip'], 
-                'environment': request.form['environment'],
-                'security_level': request.form['security-level'],
+                'name': request.form.get('hostname', ''),
+                'ip': request.form.get('ip', ''),
+                'environment': request.form.get('environment', ''),
+                'security_level': request.form.get('security-level', ''),
                 'groups': ','.join(request.form.getlist('groups')),
                 'status': 'pending'
             }
-            
-            # IP validation
-            if not ValidationService.validate_ip(host_data['ip']):
-                return jsonify({
-                    'status': 'error',
-                    'message': 'Adresse IP invalide'
-                }), 400
-            
-            # Add to database
-            DatabaseManager.add_host(host_data)
-            
-            # Update statistics
-            DatabaseManager.update_stats()
-        
-            # Save into the inventory
-            InventoryService.save_host_to_inventory(host_data)
+            HostService.create_host(host_data)
             
             return jsonify({
                 'status': 'success',
                 'message': f"Hôte {host_data['name']} ajouté avec succès!"
             })
-        except Exception as e:
+        except ValueError as exc:
+            return jsonify({'status': 'error', 'message': str(exc)}), 400
+        except Exception:
+            current_app.logger.exception("host_creation_failed")
             return jsonify({
                 'status': 'error',
-                'message': f"Erreur: {str(e)}"
+                'message': "Impossible de créer l'hôte"
             }), 500
     
     @app.route('/host/<int:host_id>', methods=['DELETE'])
     def delete_host(host_id):
         """Delete an host"""
         try:
-            # Delete host from database
-            host_data = DatabaseManager.delete_host(host_id)
-            if not host_data:
-                return jsonify({'status': 'error', 'message': 'Hôte non trouvé'}), 404
-            
-            # Update statistics
-            DatabaseManager.update_stats()
-            
-            # Remove from inventory
-            InventoryService.remove_host_from_inventory(host_data)
+            host_data = HostService.delete_host(host_id)
             
             return jsonify({
                 'status': 'success',
                 'message': f"Hôte {host_data['name']} supprimé avec succès!"
             })
-        except Exception as e:
+        except ValueError as exc:
+            return jsonify({'status': 'error', 'message': str(exc)}), 404
+        except Exception:
+            current_app.logger.exception("host_deletion_failed")
             return jsonify({
                 'status': 'error',
-                'message': f"Erreur lors de la suppression: {str(e)}"
+                'message': "Impossible de supprimer l'hôte"
             }), 500
     
     # === ROUTES FOR PLAYBOOKS ===
@@ -104,17 +113,20 @@ def register_routes(app):
                 "status": "success",
                 "playbooks": playbooks
             })
-        except Exception as e:
+        except Exception:
+            current_app.logger.exception("playbook_listing_failed")
             return jsonify({
                 "status": "error",
-                "message": str(e)
+                "message": "Impossible de lister les playbooks",
             }), 500
     
     @app.route('/playbooks', methods=['POST'])
     def add_playbook():
         """Add a new playbook"""
         try:
-            data = request.json
+            data = request.get_json(silent=True)
+            if not isinstance(data, dict):
+                raise ValueError("Le corps de la requête doit être un objet JSON")
             filename = data.get('filename')
             content = data.get('content', '')
             
@@ -126,14 +138,20 @@ def register_routes(app):
             })
         except ValueError as e:
             return jsonify({"status": "error", "message": str(e)}), 400
-        except Exception as e:
-            return jsonify({"status": "error", "message": str(e)}), 500
+        except Exception:
+            current_app.logger.exception("playbook_creation_failed")
+            return jsonify({
+                "status": "error",
+                "message": "Impossible de créer le playbook",
+            }), 500
     
     @app.route('/playbooks/<playbook_name>', methods=['PUT'])
     def edit_playbook(playbook_name):
         """Edit an existing playbook"""
         try:
-            data = request.json
+            data = request.get_json(silent=True)
+            if not isinstance(data, dict):
+                raise ValueError("Le corps de la requête doit être un objet JSON")
             content = data.get('content', '')
             
             PlaybookService.update_playbook(playbook_name, content)
@@ -144,8 +162,12 @@ def register_routes(app):
             })
         except ValueError as e:
             return jsonify({"status": "error", "message": str(e)}), 400
-        except Exception as e:
-            return jsonify({"status": "error", "message": str(e)}), 500
+        except Exception:
+            current_app.logger.exception("playbook_update_failed")
+            return jsonify({
+                "status": "error",
+                "message": "Impossible de modifier le playbook",
+            }), 500
     
     @app.route('/playbooks/<playbook_name>', methods=['DELETE'])
     def delete_playbook(playbook_name):
@@ -159,8 +181,12 @@ def register_routes(app):
             })
         except ValueError as e:
             return jsonify({"status": "error", "message": str(e)}), 400
-        except Exception as e:
-            return jsonify({"status": "error", "message": str(e)}), 500
+        except Exception:
+            current_app.logger.exception("playbook_deletion_failed")
+            return jsonify({
+                "status": "error",
+                "message": "Impossible de supprimer le playbook",
+            }), 500
     
     # === ROUTES FOR DEPLOYMENTS ===
     
@@ -168,7 +194,9 @@ def register_routes(app):
     def deploy():
         """Deploy a playbook on hosts"""
         try:
-            data = request.json
+            data = request.get_json(silent=True)
+            if not isinstance(data, dict):
+                raise ValueError("Le corps de la requête doit être un objet JSON")
             environment = data.get('environment', 'production')
             playbook = data.get('playbook', 'site.yml')
             target_hosts = data.get('hosts', [])
@@ -180,10 +208,11 @@ def register_routes(app):
             )
             
             # Start the deployment
-            DeploymentService.start_deployment(environment, playbook, target_hosts)
+            job = DeploymentService.start_deployment(environment, playbook, target_hosts)
             
             return jsonify({
                 'status': 'success',
+                'job_id': job['job_id'],
                 'message': f"Déploiement de {playbook} sur {len(target_hosts)} hôte(s) démarré!"
             })
         except ValueError as e:
@@ -191,16 +220,88 @@ def register_routes(app):
                 'status': 'error',
                 'message': str(e)
             }), 400
-        except Exception as e:
+        except Exception:
+            current_app.logger.exception("deployment_request_failed")
             return jsonify({
                 'status': 'error',
-                'message': f"Échec du déploiement: {str(e)}"
+                'message': "Échec du démarrage du déploiement"
             }), 500
+
+    @app.route('/deployments')
+    def list_deployments():
+        return jsonify([
+            _public_job(job) for job in DeploymentService.list_jobs()
+        ])
+
+    @app.route('/deployments/<job_id>')
+    def get_deployment(job_id):
+        job = DeploymentService.get_job(job_id)
+        if not job:
+            return jsonify({"status": "error", "message": "Déploiement non trouvé"}), 404
+        return jsonify(_public_job(job))
+
+    @app.route('/deployments/<job_id>/log')
+    def get_deployment_log(job_id):
+        configured_token = current_app.config.get("LOG_API_TOKEN")
+        if not configured_token:
+            return jsonify({
+                "status": "error",
+                "message": "Journal access is not configured",
+            }), 503
+        scheme, separator, supplied_token = request.headers.get(
+            "Authorization",
+            "",
+        ).partition(" ")
+        if (
+            scheme != "Bearer"
+            or not separator
+            or not hmac.compare_digest(supplied_token, configured_token)
+        ):
+            return jsonify({
+                "status": "error",
+                "message": "Authentication required",
+            }), 401
+
+        job = DeploymentService.get_job(job_id)
+        if not job:
+            return jsonify({"status": "error", "message": "Déploiement non trouvé"}), 404
+
+        log_directory = os.path.realpath(current_app.config["LOG_DIR"])
+        log_path = os.path.realpath(job["log_path"])
+        if os.path.commonpath((log_directory, log_path)) != log_directory:
+            current_app.logger.error(
+                "deployment_log_path_outside_log_directory",
+                extra={"job_id": job_id},
+            )
+            return jsonify({"status": "error", "message": "Journal non disponible"}), 404
+        try:
+            with open(log_path, "rb") as log_file:
+                log_file.seek(0, os.SEEK_END)
+                log_size = log_file.tell()
+                log_file.seek(max(0, log_size - 256 * 1024))
+                content = log_file.read().decode("utf-8", errors="replace")
+        except FileNotFoundError:
+            return jsonify({"status": "error", "message": "Journal non disponible"}), 404
+        return Response(content, mimetype="text/plain")
     
     # === ROUTES FOR STATISTICS ===
     
     @app.route('/stats')
     def get_stats():
         """Get realtime statistics"""
-        stats = DatabaseManager.get_latest_stats()
-        return jsonify(dict(stats)) if stats else jsonify({})
+        return jsonify(StatsService.get_current_stats())
+
+
+def _public_job(job):
+    return {
+        "job_id": job["job_id"],
+        "environment": job["environment"],
+        "playbook": job["playbook"],
+        "target_hosts": job["target_hosts"],
+        "status": job["status"],
+        "created_at": job["created_at"],
+        "started_at": job["started_at"],
+        "finished_at": job["finished_at"],
+        "error_message": job["error_message"],
+        "log_url": f"/deployments/{job['job_id']}/log",
+    }

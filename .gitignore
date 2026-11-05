@@ -7,10 +7,25 @@ wazuh-kibana.yml
 wazuh-manager.yml
 .vault_pass
 *.pyc
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 .mypy_cache
 Pipfile.lock
 *.swp
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+config/wazuh/generated/
+config/wazuh/indexer_ssl_certs/
 molecule/**/es_certs/
 molecule/**/opendistro/
-# logs/
-# .ssh/
+.ssh/
+logs/
+app/instance/*.db
+app/instance/*.sqlite
+app/instance/*.sqlite3

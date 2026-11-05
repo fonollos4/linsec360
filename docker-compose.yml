@@ -12,6 +12,14 @@ services:
       - ./.ssh:/opt/linsec/.ssh:rw
     ports:
       - "8000:5000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    environment:
+      FLASK_SECRET: ${FLASK_SECRET:?Set FLASK_SECRET in .env}
+      LINSEC_LOG_API_TOKEN: ${LINSEC_LOG_API_TOKEN:-}
     depends_on:
       - wazuh.manager
       - wazuh.indexer
@@ -34,15 +42,15 @@ services:
       - "514:514/udp"
       - "55000:55000"
     environment:
-      - INDEXER_URL=https://wazuh.indexer:9200
-      - INDEXER_USERNAME=admin
-      - INDEXER_PASSWORD=SecretPassword
-      - FILEBEAT_SSL_VERIFICATION_MODE=full
-      - SSL_CERTIFICATE_AUTHORITIES=/etc/ssl/root-ca.pem
-      - SSL_CERTIFICATE=/etc/ssl/filebeat.pem
-      - SSL_KEY=/etc/ssl/filebeat.key
-      - API_USERNAME=wazuh-wui
-      - API_PASSWORD=MyS3cr37P450r.*-
+      INDEXER_URL: https://wazuh.indexer:9200
+      INDEXER_USERNAME: admin
+      INDEXER_PASSWORD: ${WAZUH_ADMIN_PASSWORD:?Set WAZUH_ADMIN_PASSWORD in .env}
+      FILEBEAT_SSL_VERIFICATION_MODE: full
+      SSL_CERTIFICATE_AUTHORITIES: /etc/ssl/root-ca.pem
+      SSL_CERTIFICATE: /etc/ssl/filebeat.pem
+      SSL_KEY: /etc/ssl/filebeat.key
+      API_USERNAME: ${WAZUH_API_USERNAME:?Set WAZUH_API_USERNAME in .env}
+      API_PASSWORD: ${WAZUH_API_PASSWORD:?Set WAZUH_API_PASSWORD in .env}
     volumes:
       - wazuh_api_configuration:/var/ossec/api/configuration
       - wazuh_etc:/var/ossec/etc
@@ -83,7 +91,7 @@ services:
       - ./config/wazuh/indexer_ssl_certs/admin.pem:/usr/share/wazuh-indexer/certs/admin.pem
       - ./config/wazuh/indexer_ssl_certs/admin-key.pem:/usr/share/wazuh-indexer/certs/admin-key.pem
       - ./config/wazuh/indexer/wazuh.indexer.yml:/usr/share/wazuh-indexer/opensearch.yml
-      - ./config/wazuh/indexer/internal_users.yml:/usr/share/wazuh-indexer/opensearch-security/internal_users.yml
+      - ./config/wazuh/generated/internal_users.yml:/usr/share/wazuh-indexer/opensearch-security/internal_users.yml:ro
 
   wazuh.dashboard:
     image: wazuh/wazuh-dashboard:4.12.0
@@ -92,19 +100,19 @@ services:
     ports:
       - 443:5601
     environment:
-      - INDEXER_USERNAME=admin
-      - INDEXER_PASSWORD=SecretPassword
-      - WAZUH_API_URL=https://wazuh.manager
-      - DASHBOARD_USERNAME=kibanaserver
-      - DASHBOARD_PASSWORD=kibanaserver
-      - API_USERNAME=wazuh-wui
-      - API_PASSWORD=MyS3cr37P450r.*-
+      INDEXER_USERNAME: admin
+      INDEXER_PASSWORD: ${WAZUH_ADMIN_PASSWORD:?Set WAZUH_ADMIN_PASSWORD in .env}
+      WAZUH_API_URL: https://wazuh.manager
+      DASHBOARD_USERNAME: kibanaserver
+      DASHBOARD_PASSWORD: ${WAZUH_DASHBOARD_PASSWORD:?Set WAZUH_DASHBOARD_PASSWORD in .env}
+      API_USERNAME: ${WAZUH_API_USERNAME:?Set WAZUH_API_USERNAME in .env}
+      API_PASSWORD: ${WAZUH_API_PASSWORD:?Set WAZUH_API_PASSWORD in .env}
     volumes:
       - ./config/wazuh/indexer_ssl_certs/wazuh.dashboard.pem:/usr/share/wazuh-dashboard/certs/wazuh-dashboard.pem
       - ./config/wazuh/indexer_ssl_certs/wazuh.dashboard-key.pem:/usr/share/wazuh-dashboard/certs/wazuh-dashboard-key.pem
       - ./config/wazuh/indexer_ssl_certs/root-ca.pem:/usr/share/wazuh-dashboard/certs/root-ca.pem
       - ./config/wazuh/dashboard/opensearch_dashboards.yml:/usr/share/wazuh-dashboard/config/opensearch_dashboards.yml
-      - ./config/wazuh/dashboard/wazuh.yml:/usr/share/wazuh-dashboard/data/wazuh/config/wazuh.yml
+      - ./config/wazuh/generated/wazuh.yml:/usr/share/wazuh-dashboard/data/wazuh/config/wazuh.yml:ro
       - wazuh-dashboard-config:/usr/share/wazuh-dashboard/data/wazuh/config
       - wazuh-dashboard-custom:/usr/share/wazuh-dashboard/plugins/wazuh/public/assets/custom
     depends_on:

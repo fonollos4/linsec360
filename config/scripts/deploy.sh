@@ -3,10 +3,23 @@
 
 set -euo pipefail
 
+REPOSITORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$REPOSITORY_ROOT"
+
 # Configuration
 ENVIRONMENT=${1:-production}  
 BATCH_SIZE=${2:-20%}
 LOG_FILE="deployment-$(date +%Y%m%d-%H%M%S).log"
+
+if [[ ! "$ENVIRONMENT" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$ ]]; then
+    echo "Invalid environment name: $ENVIRONMENT" >&2
+    exit 1
+fi
+
+if [[ ! "$BATCH_SIZE" =~ ^([1-9][0-9]?|100)%?$ ]]; then
+    echo "Batch size must be an integer from 1 to 100, optionally followed by %." >&2
+    exit 1
+fi
 
 echo "Starting LinSec360 deployment for environment: $ENVIRONMENT"
 
@@ -19,7 +32,7 @@ check_prerequisites() {
         exit 1
     fi
     
-    if ! command -v docker compose &> /dev/null; then
+    if ! docker compose version &> /dev/null; then
         echo "Docker Compose is required but not installed."
         exit 1
     fi
@@ -30,6 +43,8 @@ check_prerequisites() {
 # Déploiement du plan de contrôle
 deploy_control_plane() {
     echo "Deploying control plane..."
+
+    python3 config/scripts/render-wazuh-config.py
     
     # Génération des certificats SSL
     docker compose -f generate-indexer-certs.yml run --rm generator
@@ -51,12 +66,12 @@ deploy_control_plane() {
 deploy_agents() {
     echo "Deploying agents to $ENVIRONMENT environment..."
     
-    docker compose exec ansible-control ansible-playbook \
-        -i inventories/$ENVIRONMENT/hosts.yml \
-        playbooks/site.yml \
+    docker compose exec ansible ansible-playbook \
+        -i "/opt/linsec/taskengine/inventories/$ENVIRONMENT/hosts.yml" \
+        /opt/linsec/taskengine/playbooks/site.yml \
         --extra-vars "batch_size=$BATCH_SIZE" \
-        --vault-password-file /ansible/.vault_pass \
-        | tee -a $LOG_FILE
+        --vault-password-file /opt/linsec/taskengine/.vault_pass \
+        | tee -a "$LOG_FILE"
     
     echo "Agent deployment completed."
 }
@@ -66,12 +81,15 @@ validate_deployment() {
     echo "Validating deployment..."
     
     # Vérification des agents connectés
-    CONNECTED_AGENTS=$(docker compose exec wazuh-manager /var/ossec/bin/agent_control -l | grep -c "is available")
+    CONNECTED_AGENTS=$(
+        docker compose exec wazuh.manager /var/ossec/bin/agent_control -l |
+            grep -c "is available" || true
+    )
     echo "Connected agents: $CONNECTED_AGENTS"
     
     # Tests de connectivité
-    docker compose exec ansible-control ansible \
-        -i inventories/$ENVIRONMENT/hosts.yml \
+    docker compose exec ansible ansible \
+        -i "/opt/linsec/taskengine/inventories/$ENVIRONMENT/hosts.yml" \
         all -m ping
     
     echo "Deployment validation completed."

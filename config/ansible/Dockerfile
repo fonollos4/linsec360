@@ -50,13 +50,9 @@ RUN mkdir -p /opt/linsec/app && \
     mkdir -p /opt/linsec/.ssh 
 
 # Copy taskengine configuration files into the container
-COPY ./taskengine/group_vars/ /opt/linsec/taskengine/group_vars/
-COPY ./taskengine/host_vars/ /opt/linsec/taskengine/host_vars/
 COPY ./taskengine/inventories/ /opt/linsec/taskengine/inventories/
-COPY ./taskengine/library/ /opt/linsec/taskengine/library/
 COPY ./taskengine/playbooks/ /opt/linsec/taskengine/playbooks/
 COPY ./taskengine/roles/ /opt/linsec/taskengine/roles/
-COPY ./taskengine/vars/ /opt/linsec/taskengine/vars/
    
 # Set the working directory to the /opt/linsec/app directory
 WORKDIR /opt/linsec/app
@@ -75,9 +71,14 @@ RUN sqlite3 /opt/linsec/app/instance/linsec.db < /opt/linsec/app/instance/schema
 
 # Create user to avoid use root account
 RUN groupadd -r ${USER} && \
-    useradd --create-home --shell /bin/bash --gid ${USER} -G sudo ${USER}  && \
-    echo "${USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${USER} && \
+    useradd --create-home --shell /bin/bash --gid ${USER} ${USER} && \
+    printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/linsec360-init-ssh\n' "${USER}" \
+        > /etc/sudoers.d/${USER} && \
     chmod 0440 /etc/sudoers.d/${USER}
+
+# Keep the only privileged runtime operation in a root-owned fixed-purpose helper.
+COPY ./config/ansible/init-ssh-key.sh /usr/local/sbin/linsec360-init-ssh
+RUN chmod 0755 /usr/local/sbin/linsec360-init-ssh
 
 # Fix permissions for directories and files
 RUN chown -R ${USER}:${USER} /opt/linsec && \

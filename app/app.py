@@ -16,10 +16,13 @@ def create_app():
     # Register routes
     register_routes(app)
     
-    # Create all necessary directory
+    # Create all necessary directories
     os.makedirs(app.instance_path, exist_ok=True)
-    os.makedirs(Config.LOG_DIR, exist_ok=True)
-    os.makedirs(Config.PLAYBOOKS_DIR, exist_ok=True)
+    if app.config['DATABASE_PATH']:
+        database_directory = os.path.dirname(app.config['DATABASE_PATH']) or '.'
+        os.makedirs(database_directory, exist_ok=True)
+    os.makedirs(app.config['LOG_DIR'], exist_ok=True)
+    os.makedirs(app.config['PLAYBOOKS_DIR'], exist_ok=True)
     
     return app
 
