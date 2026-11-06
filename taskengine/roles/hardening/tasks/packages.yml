@@ -1,0 +1,11 @@
+---
+- name: Remove legacy or risky packages
+  ansible.builtin.package:
+    name: "{{ hardening_remove_packages }}"
+    state: absent
+  when: not ansible_check_mode
+  failed_when: false
+
+- name: Collect installed packages for drift reporting
+  ansible.builtin.package_facts:
+    manager: auto

@@ -1,0 +1,23 @@
+---
+galaxy_info:
+  role_name: hardening
+  author: LinSec360
+  description: >-
+    Linux hardening baseline for SSH, sysctl, auditd, PAM, packages and
+    SELinux, with check-mode support and per-host drift reports.
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: EL
+      versions: ["9", "10"]
+    - name: Ubuntu
+      versions: ["22.04", "24.04"]
+    - name: Debian
+      versions: ["12"]
+  galaxy_tags:
+    - security
+    - hardening
+    - selinux
+    - auditd
+
+dependencies: []

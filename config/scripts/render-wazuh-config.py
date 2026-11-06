@@ -67,7 +67,12 @@ def _read_env_file(path):
         raise ValueError(".env must not be a symbolic link")
     if not path.exists():
         return {}
-    os.chmod(path, 0o600)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        # Compose bind mounts may be read-only. Reading is still safe in that
+        # runtime; the host should keep the file private via init-wazuh-env.py.
+        pass
     values = {}
     for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         stripped = line.strip()

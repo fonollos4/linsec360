@@ -1,0 +1,100 @@
+---
+# Run an OpenSCAP XCCDF evaluation and fetch the ARF result.
+#
+#   ansible-playbook -i inventories/production/hosts.yml \
+#     playbooks/openscap-scan.yml --limit rhel9 \
+#     -e openscap_profile=cis_rhel.xml
+#
+# The ARF file is fetched to artifacts/openscap/ and can be POSTed to
+# /api/v1/compliance/scans with artifact_path or content.
+- name: Run an OpenSCAP compliance scan
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    linsec_config_dir: "{{ linsec_config_dir | default(playbook_dir ~ '/../../config') }}"
+    linsec_artifact_dir: "{{ linsec_artifact_dir | default(playbook_dir ~ '/../../artifacts') }}"
+    openscap_profile: "{{ openscap_profile | default('cis_rhel.xml' if ansible_os_family == 'RedHat' else 'cis_ubuntu.xml') }}"
+    openscap_backend: ssg
+    openscap_tailoring_file: "{{ linsec_config_dir }}/openscap/profiles/{{ openscap_profile }}"
+    openscap_ssg_datastream_rhel: /usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml
+    openscap_ssg_datastream_ubuntu: /usr/share/xml/scap/ssg/content/ssg-ubuntu2204-ds.xml
+    openscap_ssg_datastream: >-
+      {{ openscap_ssg_datastream_rhel
+         if ansible_os_family == 'RedHat'
+         else openscap_ssg_datastream_ubuntu }}
+    openscap_profile_id: >-
+      {{ 'xccdf_org.ssgproject.content_profile_cis'
+         if ansible_os_family == 'RedHat'
+         else 'xccdf_org.ssgproject.content_profile_cis_level1_server' }}
+    openscap_results_dir: /var/tmp/linsec-openscap
+    openscap_result_path: "{{ openscap_results_dir }}/{{ inventory_hostname }}-arf.xml"
+    openscap_ingest_url: ""
+    openscap_api_token: ""
+
+  tasks:
+    - name: Install the OpenSCAP scanner and SCAP Security Guide
+      ansible.builtin.package:
+        name: "{{ openscap_packages }}"
+        state: present
+      vars:
+        openscap_packages: >-
+          {{ ['openscap-scanner', 'scap-security-guide']
+             if ansible_os_family == 'RedHat'
+             else ['libopenscap8', 'openscap-scanner', 'ssg-debderived', 'ssg-base'] }}
+      when: not ansible_check_mode
+
+    - name: Ensure the scan result directory exists
+      ansible.builtin.file:
+        path: "{{ openscap_results_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Run the OpenSCAP XCCDF evaluation
+      ansible.builtin.command: >-
+        oscap xccdf eval
+        --profile {{ openscap_profile_id }}
+        --tailoring-file {{ openscap_tailoring_file }}
+        --results {{ openscap_result_path }}
+        --report {{ openscap_results_dir }}/{{ inventory_hostname }}-report.html
+        {{ openscap_ssg_datastream }}
+      register: openscap_scan
+      changed_when: false
+      failed_when: openscap_scan.rc not in [0, 2]
+      check_mode: false
+
+    - name: Fetch the ARF result to the controller
+      ansible.builtin.fetch:
+        src: "{{ openscap_result_path }}"
+        dest: "{{ linsec_artifact_dir }}/openscap/"
+        flat: true
+      check_mode: false
+
+    - name: Read the ARF result for API ingestion
+      ansible.builtin.slurp:
+        src: "{{ openscap_result_path }}"
+      register: openscap_result_file
+      when:
+        - openscap_ingest_url | length > 0
+        - openscap_api_token | length > 0
+
+    - name: Send the ARF result to LinSec360
+      ansible.builtin.uri:
+        url: "{{ openscap_ingest_url.rstrip('/') }}/api/v1/compliance/scans"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ openscap_api_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          host_name: "{{ inventory_hostname }}"
+          profile: "{{ openscap_profile }}"
+          content: "{{ openscap_result_file.content | b64decode }}"
+        status_code: [200, 201]
+      when:
+        - openscap_ingest_url | length > 0
+        - openscap_api_token | length > 0
+      failed_when: false

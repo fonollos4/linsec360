@@ -1,0 +1,39 @@
+---
+- name: Apply package baseline
+  ansible.builtin.import_tasks: packages.yml
+  when:
+    - hardening_apply | bool
+    - hardening_manage_packages | bool
+
+- name: Apply SSH baseline
+  ansible.builtin.import_tasks: ssh.yml
+  when:
+    - hardening_apply | bool
+    - hardening_manage_ssh | bool
+
+- name: Apply sysctl baseline
+  ansible.builtin.import_tasks: sysctl.yml
+  when:
+    - hardening_apply | bool
+    - hardening_manage_sysctl | bool
+
+- name: Apply auditd baseline
+  ansible.builtin.import_tasks: auditd.yml
+  when:
+    - hardening_apply | bool
+    - hardening_manage_auditd | bool
+
+- name: Apply PAM baseline
+  ansible.builtin.import_tasks: pam.yml
+  when:
+    - hardening_apply | bool
+    - hardening_manage_pam | bool
+
+- name: Apply SELinux baseline
+  ansible.builtin.import_tasks: selinux.yml
+  when:
+    - hardening_apply | bool
+    - hardening_manage_selinux | bool
+
+- name: Collect hardening results
+  ansible.builtin.import_tasks: collect.yml

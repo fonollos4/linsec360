@@ -1,0 +1,23 @@
+---
+# Audit-only hardening run. No configuration is changed, but every host still
+# gets a drift report that can be ingested by the LinSec360 API.
+- name: Audit the LinSec360 hardening baseline
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    hardening_apply: false
+    linsec_config_dir: "{{ linsec_config_dir | default(playbook_dir ~ '/../../config') }}"
+    linsec_artifact_dir: "{{ linsec_artifact_dir | default(playbook_dir ~ '/../../artifacts') }}"
+
+  roles:
+    - role: hardening
+
+  tasks:
+    - name: Fetch the hardening audit report to the controller
+      ansible.builtin.fetch:
+        src: "{{ hardening_report_path }}"
+        dest: "{{ linsec_artifact_dir }}/hardening/"
+        flat: true
+      check_mode: false

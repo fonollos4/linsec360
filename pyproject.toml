@@ -21,3 +21,12 @@ ignore = ["B008", "E501", "TRY003", "TRY004", "TRY301"]
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]
 pythonpath = ["."]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+check_untyped_defs = true
+exclude = [
+    "backend/alembic/",
+    "backend/tests/",
+]

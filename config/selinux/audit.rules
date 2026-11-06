@@ -1,0 +1,54 @@
+## LinSec360 audit baseline.
+##
+## Deployed to /etc/audit/rules.d/99-linsec.rules by the hardening role.
+## The final "-e 2" makes the rules immutable until reboot, which is deliberate:
+## an attacker cannot silently remove audit coverage. Change the rules during a
+## maintenance window.
+
+-D
+-b 8192
+--backlog_wait_time 60000
+-f 1
+
+## Identity and authentication changes.
+-w /etc/passwd -p wa -k linsec_identity
+-w /etc/shadow -p wa -k linsec_identity
+-w /etc/group -p wa -k linsec_identity
+-w /etc/gshadow -p wa -k linsec_identity
+-w /etc/security/opasswd -p wa -k linsec_identity
+-w /etc/sudoers -p wa -k linsec_privilege
+-w /etc/sudoers.d/ -p wa -k linsec_privilege
+-w /etc/pam.d/ -p wa -k linsec_auth
+-w /etc/ssh/sshd_config -p wa -k linsec_ssh
+-w /etc/ssh/sshd_config.d/ -p wa -k linsec_ssh
+
+## Privilege escalation and process execution.
+-a always,exit -F arch=b64 -S execve -F euid=0 -F auid>=1000 -F auid!=-1 -k linsec_privilege
+-a always,exit -F arch=b32 -S execve -F euid=0 -F auid>=1000 -F auid!=-1 -k linsec_privilege
+-a always,exit -F arch=b64 -S setuid,setgid,setreuid,setregid -k linsec_privilege
+-a always,exit -F arch=b32 -S setuid,setgid,setreuid,setregid -k linsec_privilege
+
+## Kernel module and live-patch tampering.
+-a always,exit -F arch=b64 -S init_module,finit_module,delete_module -k linsec_kernel_module
+-a always,exit -F arch=b32 -S init_module,finit_module,delete_module -k linsec_kernel_module
+-w /sys/kernel/livepatch/ -p wa -k linsec_livepatch
+
+## Network configuration changes.
+-a always,exit -F arch=b64 -S sethostname,setdomainname -k linsec_network
+-a always,exit -F arch=b32 -S sethostname,setdomainname -k linsec_network
+-w /etc/hosts -p wa -k linsec_network
+-w /etc/resolv.conf -p wa -k linsec_network
+-w /etc/nsswitch.conf -p wa -k linsec_network
+
+## Integrity-sensitive application and configuration paths.
+-w /etc/audit/ -p wa -k linsec_audit
+-w /etc/audit/rules.d/ -p wa -k linsec_audit
+-w /etc/systemd/ -p wa -k linsec_systemd
+-w /usr/lib/systemd/system/ -p wa -k linsec_systemd
+-w /etc/cron.d/ -p wa -k linsec_cron
+-w /etc/cron.daily/ -p wa -k linsec_cron
+-w /etc/crontab -p wa -k linsec_cron
+-w /var/spool/cron/ -p wa -k linsec_cron
+
+## Make the policy immutable. Requires a reboot to change.
+-e 2

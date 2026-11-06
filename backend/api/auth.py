@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from .. import models
 from ..db import get_db
+from ..ratelimit import login_rate_limiter
 from ..schemas import LoginRequest, Message, SessionOut, UserOut
 from ..security import (
     authenticate,
@@ -21,6 +22,11 @@ from ..security import (
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+def _login_key(request: Request, username: str) -> str:
+    client = request.client.host if request.client else "unknown"
+    return f"{client}:{username.lower()}"
+
+
 @router.post("/login", response_model=SessionOut)
 def login(
     payload: LoginRequest,
@@ -28,13 +34,17 @@ def login(
     response: Response,
     db: Session = Depends(get_db),
 ) -> SessionOut:
+    key = _login_key(request, payload.username)
+    login_rate_limiter.check(key)
     user = authenticate(db, payload.username, payload.password)
     if user is None:
+        login_rate_limiter.failure(key)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid username or password",
         )
 
+    login_rate_limiter.success(key)
     token, csrf, _ = create_session(db, user, request=request)
     set_auth_cookies(response, token, csrf)
     return SessionOut(

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LinSec360 CIS RHEL tailoring profile.
+
+  XCCDF 1.2 Tailoring document extending the CIS profile in the SCAP Security
+  Guide data stream for RHEL 9. See taskengine/playbooks/openscap-scan.yml for
+  the exact oscap command (the XML comment syntax forbids double hyphens).
+
+  Add justified local exceptions with xccdf:select / xccdf:set-value; do not
+  remove rules silently.
+-->
+<xccdf:Tailoring
+    xmlns:xccdf="http://checklists.nist.gov/xccdf/1.2"
+    id="xccdf_linsec_tailoring_cis_rhel">
+  <xccdf:benchmark href="ssg-rhel9-ds.xml"/>
+  <xccdf:version time="2026-11-06T00:00:00">1.0</xccdf:version>
+
+  <xccdf:Profile
+      id="xccdf_linsec_profile_cis_rhel"
+      extends="xccdf_org.ssgproject.content_profile_cis">
+    <xccdf:title override="true">LinSec360 CIS RHEL 9</xccdf:title>
+    <xccdf:description override="true">
+      CIS RHEL 9 baseline used by LinSec360. The score is calculated from
+      evaluated rules; not-applicable rules are excluded.
+    </xccdf:description>
+
+    <!--
+      Example local override (uncomment deliberately, with justification):
+      <xccdf:select
+          idref="xccdf_org.ssgproject.content_rule_package_aide_installed"
+          selected="true"/>
+    -->
+  </xccdf:Profile>
+</xccdf:Tailoring>

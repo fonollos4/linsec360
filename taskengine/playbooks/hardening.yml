@@ -1,0 +1,30 @@
+---
+# Apply the LinSec360 hardening baseline and collect a drift report.
+#
+#   ansible-playbook -i inventories/production/hosts.yml \
+#     playbooks/hardening.yml --limit web01
+#   ansible-playbook ... playbooks/hardening.yml --check   # dry run
+#
+# Optional automatic ingestion:
+#   -e hardening_ingest_url=https://linsec.example.com \
+#   -e hardening_api_token=linsec_xxx
+- name: Apply the LinSec360 hardening baseline
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    hardening_apply: true
+    linsec_config_dir: "{{ linsec_config_dir | default(playbook_dir ~ '/../../config') }}"
+    linsec_artifact_dir: "{{ linsec_artifact_dir | default(playbook_dir ~ '/../../artifacts') }}"
+
+  roles:
+    - role: hardening
+
+  tasks:
+    - name: Fetch the hardening report to the controller
+      ansible.builtin.fetch:
+        src: "{{ hardening_report_path }}"
+        dest: "{{ linsec_artifact_dir }}/hardening/"
+        flat: true
+      check_mode: false

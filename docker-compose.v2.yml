@@ -7,8 +7,8 @@
 #   LINSEC_SECRET_KEY              (openssl rand -hex 32)
 #   LINSEC_BOOTSTRAP_ADMIN_PASSWORD
 #
-# The legacy Wazuh/Flask stack remains in docker-compose.yml during the
-# transition. Do not publish both stacks on the same ports.
+# Wazuh services and the backend share this stack. Ansible is installed in
+# the API and worker image through backend/Dockerfile.
 
 x-backend-environment: &backend-environment
   PYTHONPATH: /opt/linsec
@@ -16,6 +16,7 @@ x-backend-environment: &backend-environment
   LINSEC_SECRET_KEY: ${LINSEC_SECRET_KEY:?Set LINSEC_SECRET_KEY in .env}
   LINSEC_COOKIE_SECURE: ${LINSEC_COOKIE_SECURE:-false}
   LINSEC_DATABASE_URL: postgresql+psycopg://linsec:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/linsec
+  LINSEC_DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
   LINSEC_REDIS_URL: redis://redis:6379/0
   LINSEC_BOOTSTRAP_ADMIN_USERNAME: ${LINSEC_BOOTSTRAP_ADMIN_USERNAME:-admin}
   LINSEC_BOOTSTRAP_ADMIN_PASSWORD: ${LINSEC_BOOTSTRAP_ADMIN_PASSWORD:?Set LINSEC_BOOTSTRAP_ADMIN_PASSWORD in .env}
@@ -25,7 +26,16 @@ x-backend-environment: &backend-environment
   LINSEC_PLAYBOOK_DIR: /opt/linsec/var/playbooks
   LINSEC_INVENTORY_DIR: /opt/linsec/var/inventories
   LINSEC_BUNDLED_PLAYBOOKS_DIR: /opt/linsec/taskengine/playbooks
-  LINSEC_CORS_ORIGINS: '["http://localhost:5173"]'
+  LINSEC_CORS_ORIGINS: ${LINSEC_CORS_ORIGINS:-["http://localhost:5173","http://localhost"]}
+  LINSEC_WAZUH_API_URL: ${LINSEC_WAZUH_API_URL:-https://wazuh.manager:55000}
+  LINSEC_WAZUH_API_USERNAME: ${WAZUH_API_USERNAME:-wazuh-wui}
+  LINSEC_WAZUH_API_PASSWORD: ${WAZUH_API_PASSWORD:-}
+  LINSEC_WAZUH_API_VERIFY_TLS: ${LINSEC_WAZUH_API_VERIFY_TLS:-true}
+  LINSEC_WAZUH_INDEXER_URL: ${LINSEC_WAZUH_INDEXER_URL:-https://wazuh.indexer:9200}
+  LINSEC_WAZUH_INDEXER_USERNAME: ${WAZUH_INDEXER_USERNAME:-admin}
+  LINSEC_WAZUH_INDEXER_PASSWORD: ${WAZUH_ADMIN_PASSWORD:-}
+  LINSEC_WAZUH_INDEXER_VERIFY_TLS: ${LINSEC_WAZUH_INDEXER_VERIFY_TLS:-true}
+  LINSEC_WAZUH_CA_BUNDLE: /opt/linsec/certs/wazuh/root-ca.pem
 
 x-backend-build: &backend-build
   context: .
@@ -38,8 +48,151 @@ x-backend-volumes: &backend-volumes
   - linsec_var:/opt/linsec/var
   - linsec_logs:/opt/linsec/logs
   - ./.ssh:/opt/linsec/.ssh:ro
+  - ./config/wazuh/indexer_ssl_certs:/opt/linsec/certs/wazuh:ro
 
 services:
+  wazuh-config:
+    image: python:3.13-alpine
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      WAZUH_ADMIN_PASSWORD: ${WAZUH_ADMIN_PASSWORD:-}
+      WAZUH_ADMIN_PASSWORD_HASH: ${WAZUH_ADMIN_PASSWORD_HASH:-}
+      WAZUH_DASHBOARD_PASSWORD: ${WAZUH_DASHBOARD_PASSWORD:-}
+      WAZUH_DASHBOARD_PASSWORD_HASH: ${WAZUH_DASHBOARD_PASSWORD_HASH:-}
+      WAZUH_API_USERNAME: ${WAZUH_API_USERNAME:-wazuh-wui}
+      WAZUH_API_PASSWORD: ${WAZUH_API_PASSWORD:-}
+    volumes:
+      - ./:/workspace:ro
+      - ./config/wazuh/generated:/workspace/config/wazuh/generated:rw
+    working_dir: /workspace
+    command: ["python", "config/scripts/render-wazuh-config.py"]
+
+  wazuh.manager:
+    image: wazuh/wazuh-manager:4.12.0
+    hostname: wazuh.manager
+    restart: always
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 655360, hard: 655360 }
+    ports:
+      - "${WAZUH_MANAGER_PORT:-1514}:1514"
+      - "${WAZUH_MANAGER_ENROLLMENT_PORT:-1515}:1515"
+      - "${WAZUH_SYSLOG_PORT:-514}:514/udp"
+      - "${WAZUH_API_PORT:-55000}:55000"
+    environment:
+      INDEXER_URL: https://wazuh.indexer:9200
+      INDEXER_USERNAME: admin
+      INDEXER_PASSWORD: ${WAZUH_ADMIN_PASSWORD:?Set WAZUH_ADMIN_PASSWORD in .env}
+      FILEBEAT_SSL_VERIFICATION_MODE: full
+      SSL_CERTIFICATE_AUTHORITIES: /etc/ssl/root-ca.pem
+      SSL_CERTIFICATE: /etc/ssl/filebeat.pem
+      SSL_KEY: /etc/ssl/filebeat.key
+      API_USERNAME: ${WAZUH_API_USERNAME:?Set WAZUH_API_USERNAME in .env}
+      API_PASSWORD: ${WAZUH_API_PASSWORD:?Set WAZUH_API_PASSWORD in .env}
+    volumes:
+      - wazuh_api_configuration:/var/ossec/api/configuration
+      - wazuh_etc:/var/ossec/etc
+      - wazuh_logs:/var/ossec/logs
+      - wazuh_queue:/var/ossec/queue
+      - wazuh_var_multigroups:/var/ossec/var/multigroups
+      - wazuh_integrations:/var/ossec/integrations
+      - wazuh_active_response:/var/ossec/active-response/bin
+      - wazuh_agentless:/var/ossec/agentless
+      - wazuh_wodles:/var/ossec/wodles
+      - filebeat_etc:/etc/filebeat
+      - filebeat_var:/var/lib/filebeat
+      - ./config/wazuh/indexer_ssl_certs/root-ca-manager.pem:/etc/ssl/root-ca.pem:ro
+      - ./config/wazuh/indexer_ssl_certs/wazuh.manager.pem:/etc/ssl/filebeat.pem:ro
+      - ./config/wazuh/indexer_ssl_certs/wazuh.manager-key.pem:/etc/ssl/filebeat.key:ro
+      - ./config/wazuh/cluster/wazuh_manager.conf:/wazuh-config-mount/etc/ossec.conf:ro
+    depends_on:
+      wazuh.indexer:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "/var/ossec/bin/wazuh-control status 2>/dev/null | grep -q 'wazuh-apid is running' && /var/ossec/bin/wazuh-control status 2>/dev/null | grep -q 'wazuh-analysisd is running'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  wazuh.indexer:
+    image: wazuh/wazuh-indexer:4.12.0
+    hostname: wazuh.indexer
+    restart: always
+    ports:
+      - "${WAZUH_INDEXER_PORT:-9200}:9200"
+    environment:
+      OPENSEARCH_JAVA_OPTS: "-Xms1g -Xmx1g"
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 65536, hard: 65536 }
+    volumes:
+      - wazuh-indexer-data:/var/lib/wazuh-indexer
+      - ./config/wazuh/indexer_ssl_certs/root-ca.pem:/usr/share/wazuh-indexer/certs/root-ca.pem:ro
+      - ./config/wazuh/indexer_ssl_certs/wazuh.indexer-key.pem:/usr/share/wazuh-indexer/certs/wazuh.indexer.key:ro
+      - ./config/wazuh/indexer_ssl_certs/wazuh.indexer.pem:/usr/share/wazuh-indexer/certs/wazuh.indexer.pem:ro
+      - ./config/wazuh/indexer_ssl_certs/admin.pem:/usr/share/wazuh-indexer/certs/admin.pem:ro
+      - ./config/wazuh/indexer_ssl_certs/admin-key.pem:/usr/share/wazuh-indexer/certs/admin-key.pem:ro
+      - ./config/wazuh/indexer/wazuh.indexer.yml:/usr/share/wazuh-indexer/opensearch.yml:ro
+      - ./config/wazuh/generated/internal_users.yml:/usr/share/wazuh-indexer/opensearch-security/internal_users.yml:ro
+    depends_on:
+      wazuh-config:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsSk --cert /usr/share/wazuh-indexer/certs/admin.pem --key /usr/share/wazuh-indexer/certs/admin-key.pem https://localhost:9200/_cluster/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  wazuh.dashboard:
+    image: wazuh/wazuh-dashboard:4.12.0
+    hostname: wazuh.dashboard
+    restart: always
+    ports:
+      - "${WAZUH_DASHBOARD_PORT:-443}:5601"
+    environment:
+      INDEXER_USERNAME: admin
+      INDEXER_PASSWORD: ${WAZUH_ADMIN_PASSWORD:?Set WAZUH_ADMIN_PASSWORD in .env}
+      WAZUH_API_URL: https://wazuh.manager
+      DASHBOARD_USERNAME: kibanaserver
+      DASHBOARD_PASSWORD: ${WAZUH_DASHBOARD_PASSWORD:?Set WAZUH_DASHBOARD_PASSWORD in .env}
+      API_USERNAME: ${WAZUH_API_USERNAME:?Set WAZUH_API_USERNAME in .env}
+      API_PASSWORD: ${WAZUH_API_PASSWORD:?Set WAZUH_API_PASSWORD in .env}
+    volumes:
+      - ./config/wazuh/indexer_ssl_certs/wazuh.dashboard.pem:/usr/share/wazuh-dashboard/certs/wazuh-dashboard.pem:ro
+      - ./config/wazuh/indexer_ssl_certs/wazuh.dashboard-key.pem:/usr/share/wazuh-dashboard/certs/wazuh-dashboard-key.pem:ro
+      - ./config/wazuh/indexer_ssl_certs/root-ca.pem:/usr/share/wazuh-dashboard/certs/root-ca.pem:ro
+      - ./config/wazuh/dashboard/opensearch_dashboards.yml:/usr/share/wazuh-dashboard/config/opensearch_dashboards.yml:ro
+      - ./config/wazuh/generated/wazuh.yml:/usr/share/wazuh-dashboard/data/wazuh/config/wazuh.yml:ro
+      - wazuh-dashboard-config:/usr/share/wazuh-dashboard/data/wazuh/config
+      - wazuh-dashboard-custom:/usr/share/wazuh-dashboard/plugins/wazuh/public/assets/custom
+    depends_on:
+      wazuh-config:
+        condition: service_completed_successfully
+      wazuh.indexer:
+        condition: service_healthy
+      wazuh.manager:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fk https://localhost:5601/app/wazuh >/dev/null 2>&1 || curl -fk https://localhost:5601/status >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${LINSEC_WEB_PORT:-80}:80"
+    depends_on:
+      api:
+        condition: service_healthy
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -86,6 +239,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      wazuh.manager:
+        condition: service_started
+      wazuh.indexer:
+        condition: service_started
     healthcheck:
       test:
         - CMD
@@ -121,3 +278,17 @@ volumes:
   linsec_redis:
   linsec_var:
   linsec_logs:
+  wazuh_api_configuration:
+  wazuh_etc:
+  wazuh_logs:
+  wazuh_queue:
+  wazuh_var_multigroups:
+  wazuh_integrations:
+  wazuh_active_response:
+  wazuh_agentless:
+  wazuh_wodles:
+  filebeat_etc:
+  filebeat_var:
+  wazuh-indexer-data:
+  wazuh-dashboard-config:
+  wazuh-dashboard-custom:

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LinSec360 CIS Ubuntu tailoring profile.
+
+  This is an XCCDF 1.2 Tailoring document. It extends the CIS Level 1 Server
+  profile shipped by the SCAP Security Guide data stream for Ubuntu 22.04/24.04.
+  See taskengine/playbooks/openscap-scan.yml for the exact oscap command (the
+  XML comment syntax forbids double hyphens).
+
+  Local exceptions are added with xccdf:select or xccdf:set-value elements
+  below. Keep every override commented with a ticket/justification: silent
+  exceptions destroy the value of the compliance score.
+-->
+<xccdf:Tailoring
+    xmlns:xccdf="http://checklists.nist.gov/xccdf/1.2"
+    id="xccdf_linsec_tailoring_cis_ubuntu">
+  <xccdf:benchmark href="ssg-ubuntu2204-ds.xml"/>
+  <xccdf:version time="2026-11-06T00:00:00">1.0</xccdf:version>
+
+  <xccdf:Profile
+      id="xccdf_linsec_profile_cis_ubuntu"
+      extends="xccdf_org.ssgproject.content_profile_cis_level1_server">
+    <xccdf:title override="true">LinSec360 CIS Ubuntu Level 1 Server</xccdf:title>
+    <xccdf:description override="true">
+      CIS Ubuntu Linux Level 1 Server baseline used by LinSec360. The score is
+      calculated from evaluated rules; not-applicable rules are excluded.
+    </xccdf:description>
+
+    <!--
+      Example local override (uncomment deliberately, with justification):
+      <xccdf:select
+          idref="xccdf_org.ssgproject.content_rule_package_audit_installed"
+          selected="true"/>
+    -->
+  </xccdf:Profile>
+</xccdf:Tailoring>

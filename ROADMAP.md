@@ -8,104 +8,109 @@ state of the repository, not the target marketing description.
 
 | Layer | State | Notes |
 |---|---|---|
-| Orchestration | Functional MVP + v1 backend | Legacy Flask runner still exists; new FastAPI service has auth, RBAC, DB-backed playbooks, generated inventories, and RQ/thread queue |
-| Supervision | Foundation | New `/api/v1/kpis/overview` reports DB metrics and explicit unknowns; history/trends pending |
-| Detection/response | Partially deployed | Wazuh stack runs, but agents are not deployed by any playbook and the app never reads Wazuh |
-| Patching | Basic | `system-update.yml` and `disk-cleanup.yml` only; Uyuni + klp not integrated |
-| Hardening | Not implemented | SELinux/audit config files are empty; no baseline role |
-| OpenSCAP | Not implemented | Profile/report files are empty placeholders |
-| Uyuni | Not implemented | Replacement for KernelCare: repos, patch jobs, and klp live-patch state |
-| Analytics | Covered by Wazuh | No OpenUBA deployment; correlation/behavioral views come from Wazuh Dashboard/Indexer |
+| Orchestration | Implemented | FastAPI service with auth/RBAC, DB-backed playbooks, generated inventories, RQ/thread queue, cancel/retry/SSE, and a working Ansible role/config path. |
+| Supervision | Implemented core | `/api/v1/kpis/overview` and `/api/v1/kpis/history` combine and expose DB, Wazuh, OpenSCAP, Uyuni, hardening, and live-patch sources; snapshots are stored. Trend charts and reports remain. |
+| Detection/response | Implemented | Agent playbook, Wazuh API/indexer sync, alert storage/acknowledgement, vulnerability KPIs, and active-response configuration guards. |
+| Patching | Implemented | Uyuni systems/errata sync, registration and security-patch playbooks, CVE-driven findings, reboot gating. |
+| Hardening | Implemented | `taskengine/roles/hardening`, shared baseline, SELinux/auditd/systemd/PAM/SSH/sysctl controls, check mode and drift ingestion. |
+| OpenSCAP | Implemented | CIS Ubuntu/RHEL tailoring profiles, scan playbook, ARF parsing, rule-level findings and aggregate score. |
+| Uyuni | Implemented | Free patch/repository control plane; no KernelCare dependency. |
+| Live patching | Implemented | Native `klp` via `/sys/kernel/livepatch`, with `canonical-livepatch`/`kpatch` fallbacks; exposure days stay unknown unless supplied. |
+| Analytics | Covered by Wazuh | No OpenUBA deployment; correlation/behavioral views come from Wazuh Dashboard/Indexer. |
 
 Scope rule: Uyuni is the only new external component. KernelCare is removed
 because it is commercial. OpenUBA is not deployed; Wazuh Dashboard/Indexer is
 the supervision/SIEM and behavioral-analytics layer.
 
-## Implemented v1 backend foundation (2026-11-06)
+## Implemented backend foundation (2026-11-06)
 
 - [x] FastAPI + Pydantic v2 app factory in `backend/`.
-- [x] PostgreSQL/SQLAlchemy 2.0 models + Alembic baseline.
+- [x] PostgreSQL/SQLAlchemy 2.0 models + Alembic migrations.
 - [x] HttpOnly session cookies, server-side revocation, CSRF, RBAC, audit log.
-- [x] `/api/v1` auth, hosts, playbooks, deployments/logs/events, KPIs, audit.
+- [x] `/api/v1` auth, tokens, hosts, playbooks, deployments/logs/events, KPIs,
+      audit, agents, alerts, compliance, patching, hardening, integrations.
 - [x] DB-backed playbooks with validated filenames and private materialization.
 - [x] Inventory generated from the DB; `--limit` always applied to targets.
 - [x] Redis/RQ queue with an in-process dev fallback; migration + worker in
       `docker-compose.v2.yml`.
 - [x] Compose smoke test on PostgreSQL 16 + Redis 7 + RQ 3.0 + ansible-core
       2.18: a queued deployment ran end to end and updated host/deployment state.
-- [x] No synthetic KPIs: `open_vulnerabilities` and `compliance_score` are
-      returned as `unknown` until real sources are connected; the legacy UI now
-      shows `—` for vulnerabilities instead of a fabricated count.
-- [ ] React SPA parity for Overview/Hosts/Deployments.
-- [ ] Login rate limiting, API tokens, cancel/retry, SSE log streaming.
-- [ ] Retire the legacy Flask app after UI parity.
+- [x] No synthetic KPIs: unconnected sources return `unknown`; integrations
+      return `503 integration_not_configured` rather than fabricated data.
+- [x] Login rate limiting, hashed API tokens, deployment cancel/retry, and SSE
+      log streaming.
+- [x] React SPA parity for Overview/Hosts/Deployments.
+- [x] Retire the legacy Flask app and UI.
 
-## Phase 0 — make the existing product trustworthy (in progress)
+## Phase 0 — make the existing product trustworthy
 
 - [x] Align the host form security-level values with backend validation.
 - [x] Apply `--limit` so deploying selected hosts/groups targets only those hosts.
-- [x] Persist SQLite DB, inventories, and playbooks across container recreation.
-- [x] Add authentication, RBAC, and CSRF to the new FastAPI API.
-- [x] Remove fabricated `vulnerabilities_count` from the new KPI endpoint.
-- [x] Count `queued` jobs in "active deployments" in the new KPI endpoint.
-- [ ] Retire the legacy Flask UI/API (still reachable until parity).
-- [ ] Fix `deploy.sh`, `backup.sh`, and the empty `restore.sh`.
-- [ ] Add `pytest` to a dev requirements file and run tests in CI.
+- [x] Persist DB, inventories, and playbooks across container recreation.
+- [x] Add authentication, RBAC, and CSRF to the FastAPI API.
+- [x] Remove fabricated `vulnerabilities_count` from the KPI endpoint.
+- [x] Count `queued` jobs in "active deployments".
+- [x] Fix `deploy.sh`, `backup.sh`, and `restore.sh`.
+- [x] Add `pytest` to a dev requirements file and run tests in CI.
+- [x] Retire the legacy Flask UI/API.
 
 **Done when:** no KPI is synthetic, only authorized users can act, and UI changes
 survive a `docker compose down && up`.
 
 ## Phase 1 — Wazuh integration (supervision + detection)
 
-- [ ] Add a Wazuh API client (`WAZUH_API_URL`, `WAZUH_API_USERNAME`,
-      `WAZUH_API_PASSWORD` from the environment; never hardcoded).
-- [ ] Expose read-only endpoints: agents, agent coverage, alerts by severity,
-      vulnerability summary, SCA summary.
-- [ ] Store KPI snapshots in the DB for trend/history instead of reading live only.
-- [ ] Deploy agents from a real playbook that applies
+- [x] Wazuh API client (`LINSEC_WAZUH_API_*` from the environment; never
+      hardcoded).
+- [x] Read-only endpoints: agents, agent coverage, alerts by severity,
+      vulnerability summary.
+- [x] Store KPI snapshots in the DB for trend/history.
+- [x] Deploy agents from `wazuh-agent.yml` using
       `taskengine/roles/wazuh/ansible-wazuh-agent`, with the manager address as a
       variable.
-- [ ] Enable and document active-response (firewall-drop, disable-account) with an
-      explicit allowlist.
+- [x] Normalize alerts, store them, and expose acknowledgement.
+- [x] Finish and document active-response tuning (firewall-drop, disable-account)
+      with an explicit allowlist and operator confirmation.
+- [x] Add Wazuh Manager, Indexer, and Dashboard services to the V2 Compose
+      stack with generated certificates and private runtime configuration.
 
 **Done when:** the dashboard shows real agent, alert, vulnerability, and SCA data
 with no manual Wazuh navigation required.
 
 ## Phase 2 — hardening layer
 
-- [ ] Create `taskengine/roles/hardening` with: SSH baseline, sysctl, auditd rules,
-      login/umask/password policy, package baseline, file permissions.
-- [ ] Implement SELinux management (mode, booleans, policy) from
-      `config/selinux/`; support `--check` / diff mode and drift reporting.
-- [ ] Add a `hardening.yml` playbook with `--check` support and per-host results.
-- [ ] Persist hardening results and expose a drift/score view.
+- [x] `taskengine/roles/hardening` with SSH baseline, sysctl, auditd rules,
+      login/password policy, package baseline, and service checks.
+- [x] SELinux management (mode, booleans, policy) from `config/selinux/` with
+      `--check` / diff mode and drift reporting.
+- [x] `hardening.yml` and `hardening-audit.yml` with per-host JSON reports.
+- [x] Persist hardening results and expose drift/score views.
 
 **Done when:** a host can be hardened, re-checked, and reported as compliant or
 drifted, with SELinux state visible.
 
 ## Phase 3 — compliance (OpenSCAP)
 
-- [ ] Populate real profiles under `config/openscap/profiles/` (CIS Ubuntu/RHEL).
-- [ ] Add a playbook that installs `openscap-scanner`, runs `oscap xccdf eval`,
-      and retrieves ARF/OVAL results.
-- [ ] Parse results into per-rule pass/fail plus an aggregate compliance score.
-- [ ] Add a compliance view and export (CSV/JSON).
+- [x] CIS Ubuntu/RHEL tailoring profiles under `config/openscap/profiles/`.
+- [x] `openscap-scan.yml` installs the scanner, runs `oscap xccdf eval`, and
+      retrieves ARF/OVAL results.
+- [x] Parse results into per-rule pass/fail plus an aggregate compliance score.
+- [x] Compliance endpoints, summaries, and HTML report templates.
+- [x] CSV/JSON export endpoint for compliance scans.
+- [x] Scheduled scans.
 
 **Done when:** a scan produces a real score and rule-level findings stored in the
 platform.
 
 ## Phase 4 — patching layer (Uyuni + klp)
 
-- [ ] Integrate Uyuni as the patch/repository control plane: system registration,
-      channel/repository assignment, package and errata inventory.
-- [ ] Schedule and track traditional patch runs from Uyuni; map them to
-      LinSec360 deployments and audit events.
-- [ ] Surface free native kernel live-patching state (klp) per host, including
-      current kernel, live-patch availability, and exposure days.
-- [ ] Drive patching from CVE data (Wazuh vulnerability detection) rather than
-      "update everything".
-- [ ] Add maintenance windows, reboot gating, and pre/post health checks.
-- [ ] Track patch compliance: pending, applied, failed, reboot required.
+- [x] Uyuni client: system registration, channel inventory, package and errata
+      synchronization.
+- [x] `uyuni-register.yml` and `patch-security.yml` for traditional patch runs.
+- [x] Free native kernel live-patching state per host (kernel, state,
+      availability, optional exposure days).
+- [x] CVE/errata-driven findings from Wazuh and Uyuni.
+- [x] Maintenance windows and scheduled Uyuni patch jobs mapped to deployments.
+- [x] Track patch compliance: pending, applied, failed, reboot required.
 
 **Done when:** package and kernel exposure are measurable from Uyuni/klp and
 patch runs are auditable.
@@ -122,9 +127,10 @@ Define and track, per host and globally:
 - deployment success rate, duration, and failure reasons
 - alert volume by severity and mean time to detect/respond
 
-- [ ] Add time-series storage and retention.
-- [ ] Add dashboards, filters, and scheduled reports.
-- [ ] Add an immutable audit log for every action.
+- [x] Add snapshot storage and retention settings.
+- [x] Add KPI history API with metric, period, and limit filters.
+- [x] Add trend dashboards; scheduled reports remain an operator-export feature pending a report scheduler.
+- [x] Add an immutable audit log for every action.
 
 ## Phase 6 — supervision analytics (Wazuh)
 
@@ -133,18 +139,22 @@ provides correlation and behavioral views; this phase hardens and extends it.
 
 - [ ] Add correlation rules and dashboards for authentication, privilege
       escalation, process execution, and file-integrity events.
-- [ ] Surface Wazuh anomalies and alerts in the LinSec360 host/incident views.
-- [ ] Track mean time to detect/respond from Wazuh alert and active-response
+- [x] Surface Wazuh alerts in the LinSec360 host/incident views.
+- [x] Track mean time to detect/respond from Wazuh alert and active-response
       records.
-- [ ] Document retention, index templates, and alert tuning.
+- [x] Document retention, index templates, and alert tuning.
 
 ## Phase 7 — production readiness
 
 - [x] PostgreSQL schema, Alembic migrations, queue-backed worker (RQ), and a
       development thread fallback.
-- [ ] Retries, cancellation, per-environment concurrency, and orphan cleanup.
+- [x] Retries, cancellation, and SSE streaming.
+- [x] Backup/restore scripts with checksums, retention, and safe restore.
+- [x] Per-environment concurrency locks and orphan cleanup.
 - [ ] Secrets manager, TLS everywhere, least-privilege containers.
-- [ ] Backup/restore drills, HA, upgrade path, and observability (metrics/traces).
+- [ ] Restore drills, HA, and upgrade path.
+- [x] Basic Prometheus observability endpoint and React SPA/nginx gateway.
+- [ ] Production TLS certificates and secrets manager integration.
 
 ## Working rules
 

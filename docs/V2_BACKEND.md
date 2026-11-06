@@ -1,29 +1,35 @@
 # LinSec360 v1 backend
 
-This document describes the new FastAPI + PostgreSQL backend that will replace
-the legacy Flask application. The legacy app in `app/` is intentionally frozen
-until the React UI reaches feature parity.
+This document describes the FastAPI + PostgreSQL backend used by the LinSec360
+React application.
 
 ## What exists
 
 - `backend/` — FastAPI application, SQLAlchemy 2.0 models, Pydantic v2 schemas.
 - PostgreSQL schema managed by Alembic (`backend/alembic/`).
 - Redis + RQ deployment queue with an in-process thread fallback for local dev.
-- Session authentication, CSRF protection, RBAC, and an audit log.
+- Session authentication, CSRF protection, RBAC, hashed API tokens, login rate
+  limiting, and an audit log.
 - DB-backed playbooks, generated Ansible inventories, and deployment logs.
-- `/api/v1` endpoints for hosts, playbooks, deployments, KPIs, and audit.
+- Deployment cancellation, retry, and SSE log streaming.
+- Wazuh agents/alerts/vulnerabilities, OpenSCAP scans, Uyuni systems/errata,
+  native live-patch state, hardening drift, and KPI snapshots.
+- `/api/v1` endpoints for all of the above.
 - `docker-compose.v2.yml` for PostgreSQL + Redis + API + worker.
-- 30 backend tests in `backend/tests/`.
+- 44 backend tests in `backend/tests/`.
 
 ## Architecture
 
 ```text
 Browser / API client
   -> FastAPI (backend/main.py)
-       -> services/ (hosts, playbooks, deployments, KPIs, audit)
+       -> services/ (hosts, playbooks, deployments, KPIs, audit,
+                     wazuh, oscap, uyuni, livepatch, hardening, alerts)
        -> SQLAlchemy -> PostgreSQL
        -> RQ queue -> Redis
                          -> worker -> ansible-playbook -> managed hosts
+       -> Wazuh API / Indexer (alerts, agents, vulnerabilities)
+       -> Uyuni API (systems, channels, errata)
 ```
 
 The worker writes inventories and materialized playbooks to private runtime
@@ -63,9 +69,6 @@ The API container runs `alembic upgrade head` before starting Uvicorn. The
 worker starts only after the API is healthy. On the first startup the bootstrap
 admin is created from `LINSEC_BOOTSTRAP_ADMIN_PASSWORD`; change it immediately
 after login.
-
-The legacy Wazuh/Flask stack in `docker-compose.yml` can run at the same time;
-it publishes the Flask app on port `8000`, while the new API uses `8080`.
 
 ## Local development without Docker
 
@@ -219,8 +222,7 @@ ansible-core 2.18:
   host `secured`.
 
 The worker image installs `ansible-core`, not the full `ansible` package. It
-therefore uses `backend/ansible.cfg` with `stdout_callback = default`; the
-legacy config's `yaml` callback is not available in ansible-core.
+therefore uses `backend/ansible.cfg` with `stdout_callback = default`.
 
 ## Operational notes
 
@@ -256,6 +258,9 @@ upgrade on PostgreSQL 16.
 .venv/bin/pytest backend/tests -q
 ```
 
+GitHub Actions runs the backend suite with Ruff and mypy on every push and pull
+request through `.github/workflows/ci.yml`.
+
 The suite covers auth/CSRF/RBAC, host CRUD and validation, playbook CRUD and
 YAML validation, inventory generation and file permissions, KPI unknowns and
 counts, deployment creation, worker success/failure, and log retrieval. It uses
@@ -264,9 +269,9 @@ a temporary SQLite database per test and never touches the real database.
 ## Not implemented yet
 
 - React SPA and visual dashboards.
-- Login rate limiting, account lockout, API tokens, OIDC.
-- Deployment cancellation, retry, per-environment locks, SSE streaming.
-- Wazuh, OpenSCAP, KernelCare, and OpenUBA integrations.
-- Import of data from the legacy SQLite database. The old schema differs; plan
-  a one-shot importer before retiring `app/`.
+- Account lockout and OIDC single sign-on.
+- Per-environment concurrency locks and orphan cleanup.
+- Scheduled compliance and Uyuni jobs.
+- KernelCare and additional OpenUBA integrations.
+- TLS/nginx gateway and production secret manager.
 - TLS/nginx gateway and production secret manager.

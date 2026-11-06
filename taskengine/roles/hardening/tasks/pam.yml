@@ -1,0 +1,46 @@
+---
+- name: Ensure /etc/security exists
+  ansible.builtin.file:
+    path: /etc/security
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render password quality policy
+  ansible.builtin.template:
+    src: pwquality.conf.j2
+    dest: "{{ hardening_pwquality_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Render account lockout policy
+  ansible.builtin.template:
+    src: faillock.conf.j2
+    dest: /etc/security/faillock.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable pam_pwquality on Debian family hosts
+  ansible.builtin.lineinfile:
+    path: /etc/pam.d/common-password
+    regexp: "pam_pwquality\\.so"
+    line: "password requisite pam_pwquality.so retry=3"
+    insertafter: "^password"
+  when:
+    - ansible_os_family == "Debian"
+    - not ansible_check_mode
+  failed_when: false
+
+- name: Enable pam_faillock on Debian family hosts
+  ansible.builtin.lineinfile:
+    path: /etc/pam.d/common-auth
+    regexp: "pam_faillock\\.so"
+    line: "auth required pam_faillock.so preauth silent audit deny={{ hardening_faillock_deny }} unlock_time={{ hardening_faillock_unlock_time }}"
+    insertbefore: "^auth"
+  when:
+    - ansible_os_family == "Debian"
+    - not ansible_check_mode
+  failed_when: false

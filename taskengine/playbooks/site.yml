@@ -1,0 +1,15 @@
+---
+# Default LinSec360 site playbook.
+#
+# This is intentionally read-only: connectivity and audit collection only. It
+# is the safe default for the legacy UI and for a first run against new hosts.
+#
+# Apply changes explicitly with the dedicated entry points:
+#   playbooks/hardening.yml      hardening baseline (use --check first)
+#   playbooks/hardening-audit.yml  audit-only drift report
+#   playbooks/wazuh-agent.yml    agent deployment (requires wazuh_manager_address)
+#   playbooks/openscap-scan.yml  OpenSCAP compliance evaluation
+#   playbooks/patch-security.yml security updates (Uyuni is the primary path)
+#   playbooks/livepatch-check.yml native live-patch state
+- import_playbook: connectivity.yml
+- import_playbook: system-audit.yml

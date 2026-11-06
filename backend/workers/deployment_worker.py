@@ -36,6 +36,28 @@ def _write_extra_vars(values: dict, directory: Path) -> Path:
     return Path(path)
 
 
+def _ansible_environment(settings) -> dict[str, str]:
+    """Environment that lets materialized playbooks find roles and config.
+
+    Playbooks are materialized under ``var/playbooks`` while roles and the
+    hardening/OpenSCAP assets live in the repository, so both are injected
+    explicitly instead of relying on whatever ansible.cfg is installed.
+    """
+    environment = os.environ.copy()
+    roles_path = os.pathsep.join(
+        str(path) for path in settings.ansible_roles_paths if path
+    )
+    environment["ANSIBLE_ROLES_PATH"] = roles_path
+    environment["ANSIBLE_NOCOLOR"] = "1"
+    if settings.ansible_config_path:
+        environment["ANSIBLE_CONFIG"] = str(settings.ansible_config_path)
+    elif (settings.taskengine_dir / "playbooks" / "ansible.cfg").is_file():
+        environment["ANSIBLE_CONFIG"] = str(
+            settings.taskengine_dir / "playbooks" / "ansible.cfg"
+        )
+    return environment
+
+
 def _build_command(
     *,
     playbook_path: Path,
@@ -87,6 +109,20 @@ def run_deployment(deployment_id: str) -> None:
             )
             return
 
+        if deployment.cancel_requested:
+            deployment.status = "cancelled"
+            deployment.cancelled_at = _now()
+            deployment.finished_at = _now()
+            deployment.events.append(
+                models.DeploymentEvent(
+                    level="info",
+                    event="deployment_cancelled",
+                    message="Cancelled before execution",
+                )
+            )
+            db.commit()
+            return
+
         deployment.status = "running"
         deployment.started_at = _now()
         deployment.events.append(
@@ -114,8 +150,13 @@ def run_deployment(deployment_id: str) -> None:
             inventory_path = inventory_service.write_inventory(
                 db, deployment.environment_name
             )
+            settings.artifacts_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
             env_vars_path = _write_extra_vars(
-                {"linsec_env": deployment.environment_name},
+                {
+                    "linsec_env": deployment.environment_name,
+                    "linsec_config_dir": str(settings.config_dir),
+                    "linsec_artifact_dir": str(settings.artifacts_dir),
+                },
                 settings.log_dir,
             )
             host_vars_path = _write_extra_vars(
@@ -131,6 +172,7 @@ def run_deployment(deployment_id: str) -> None:
                 host_vars_path=host_vars_path,
                 target_hosts=target_names,
             )
+            environment = _ansible_environment(settings)
 
             _append_log(
                 log_path,
@@ -148,8 +190,10 @@ def run_deployment(deployment_id: str) -> None:
                     stdout=log,
                     stderr=subprocess.STDOUT,
                     cwd=str(settings.taskengine_dir),
+                    env=environment,
                     check=False,
                     text=True,
+                    timeout=settings.deployment_timeout_seconds,
                 )
             _append_log(
                 log_path,
@@ -160,6 +204,16 @@ def run_deployment(deployment_id: str) -> None:
                 error_message = (
                     f"ansible-playbook exited with code {process.returncode}"
                 )
+        except subprocess.TimeoutExpired as exc:
+            success = False
+            error_message = (
+                f"ansible-playbook exceeded {settings.deployment_timeout_seconds}s"
+            )
+            try:
+                _append_log(log_path, f"\n{error_message}\n")
+            except OSError:
+                logger.exception("could not write timeout to %s", log_path)
+            logger.warning("deployment %s timed out: %s", deployment_id, exc)
         except Exception as exc:
             success = False
             error_message = "deployment execution failed"
@@ -176,6 +230,33 @@ def run_deployment(deployment_id: str) -> None:
                     pass
                 except OSError:
                     logger.warning("could not remove temporary file %s", path)
+
+        try:
+            db.refresh(deployment)
+        except Exception:  # pragma: no cover - defensive refresh
+            logger.exception("could not refresh deployment %s", deployment_id)
+        cancelled = bool(deployment.cancel_requested)
+        if cancelled:
+            deployment.status = "cancelled"
+            deployment.cancelled_at = _now()
+            deployment.finished_at = _now()
+            deployment.error_message = "cancelled by operator"
+            for target in deployment.targets:
+                target.status = "cancelled"
+                if target.host_id is not None:
+                    host = db.get(models.Host, target.host_id)
+                    if host is not None and host.status == "deploying":
+                        host.status = "pending"
+            deployment.events.append(
+                models.DeploymentEvent(
+                    level="info",
+                    event="deployment_cancelled",
+                    message="Deployment cancelled by operator",
+                    data={"hosts": target_names},
+                )
+            )
+            db.commit()
+            return
 
         deployment.status = "succeeded" if success else "failed"
         deployment.finished_at = _now()

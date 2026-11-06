@@ -6,10 +6,27 @@ from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
 from .. import models
+from ..config import get_settings
 from ..db import get_db
-from ..schemas import HostCreate, HostOut, HostUpdate, Message
+from ..schemas import (
+    AgentOut,
+    HardeningCheckOut,
+    HostCreate,
+    HostOut,
+    HostPosture,
+    HostUpdate,
+    Message,
+    PatchFindingOut,
+)
 from ..security import get_current_user, require_roles
-from ..services import host_service
+from ..services import (
+    hardening_service,
+    host_service,
+    livepatch_service,
+    oscap_service,
+    patch_service,
+    wazuh_service,
+)
 
 router = APIRouter(prefix="/hosts", tags=["hosts"])
 
@@ -53,6 +70,45 @@ def get_host(
     user: models.User = Depends(get_current_user),
 ) -> HostOut:
     return host_service.serialize(host_service.get_host(db, host_id))
+
+
+@router.get("/{host_id}/posture", response_model=HostPosture)
+def get_host_posture(
+    host_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+) -> HostPosture:
+    host = host_service.get_host(db, host_id)
+    scan = oscap_service.latest_for_host(db, host.id)
+    checks = hardening_service.host_checks(db, host.id)
+    findings = patch_service.list_findings(db, host_name=host.name, limit=200)
+    livepatch = livepatch_service.latest_for_host(db, host.id)
+
+    agent: AgentOut | None = None
+    if get_settings().wazuh_configured:
+        try:
+            for item in wazuh_service.get_client().list_agents():
+                if item["id"] == host.agent_id or item["name"] == host.name:
+                    agent = AgentOut(**item, host_id=host.id)
+                    break
+        except Exception:
+            agent = None
+
+    return HostPosture(
+        host_id=host.id,
+        host_name=host.name,
+        compliance=oscap_service.serialize(scan) if scan else None,
+        hardening=[
+            HardeningCheckOut.model_validate(check) for check in checks
+        ],
+        patch_findings=[
+            PatchFindingOut.model_validate(finding) for finding in findings
+        ],
+        livepatch=(
+            livepatch_service.serialize(livepatch) if livepatch else None
+        ),
+        agent=agent,
+    )
 
 
 @router.patch("/{host_id}", response_model=HostOut)

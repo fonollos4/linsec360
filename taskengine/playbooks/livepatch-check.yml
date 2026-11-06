@@ -1,0 +1,54 @@
+---
+# Collect free native kernel live-patching (klp / kpatch / canonical-livepatch)
+# state without KernelCare. Exposure days remain null unless an operator
+# supplies them; LinSec360 reports that as an explicit unknown KPI.
+- name: Collect kernel live-patch state
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    linsec_config_dir: "{{ linsec_config_dir | default(playbook_dir ~ '/../../config') }}"
+    livepatch_ingest_url: ""
+    livepatch_api_token: ""
+
+  tasks:
+    - name: Read live-patch state on the target
+      ansible.builtin.script:
+        cmd: "{{ linsec_config_dir }}/scripts/livepatch_report.py"
+      register: livepatch_script
+      changed_when: false
+      check_mode: false
+
+    - name: Parse the live-patch report
+      ansible.builtin.set_fact:
+        livepatch_report: "{{ livepatch_script.stdout | from_json }}"
+
+    - name: Show the live-patch state
+      ansible.builtin.debug:
+        msg:
+          host: "{{ inventory_hostname }}"
+          kernel: "{{ livepatch_report.kernel }}"
+          state: "{{ livepatch_report.livepatch_state }}"
+          patch_available: "{{ livepatch_report.patch_available }}"
+          exposure_days: "{{ livepatch_report.exposure_days }}"
+
+    - name: Send the live-patch state to LinSec360
+      ansible.builtin.uri:
+        url: "{{ livepatch_ingest_url.rstrip('/') }}/api/v1/patching/livepatch"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ livepatch_api_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          host_name: "{{ inventory_hostname }}"
+          kernel: "{{ livepatch_report.kernel }}"
+          livepatch_state: "{{ livepatch_report.livepatch_state }}"
+          patch_available: "{{ livepatch_report.patch_available }}"
+          exposure_days: "{{ livepatch_report.exposure_days }}"
+        status_code: [200, 201]
+      when:
+        - livepatch_ingest_url | length > 0
+        - livepatch_api_token | length > 0
+      failed_when: false

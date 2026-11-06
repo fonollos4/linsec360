@@ -70,6 +70,18 @@ def create_deployment(
         host_names=payload.hosts,
         group=payload.group,
     )
+    active = (
+        db.query(models.Deployment)
+        .filter(
+            models.Deployment.environment_id == environment.id,
+            models.Deployment.status.in_(["queued", "running"]),
+        )
+        .count()
+    )
+    if active >= settings.deployment_max_per_environment:
+        raise DomainError(
+            "environment concurrency limit reached; wait for an active deployment"
+        )
 
     deployment_id = str(uuid.uuid4())
     settings.log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -139,6 +151,61 @@ def create_deployment(
         raise DomainError("unable to enqueue deployment") from exc
 
     return deployment
+
+
+def cancel_deployment(
+    db: Session,
+    *,
+    deployment: models.Deployment,
+    actor: models.User,
+) -> models.Deployment:
+    if deployment.status in {"succeeded", "failed", "cancelled"}:
+        raise DomainError(f"deployment is already {deployment.status}")
+    deployment.cancel_requested = True
+    if deployment.status == "queued":
+        deployment.status = "cancelled"
+        deployment.cancelled_at = _now()
+        deployment.finished_at = _now()
+        for target in deployment.targets:
+            target.status = "cancelled"
+            if target.host_id is not None:
+                host = db.get(models.Host, target.host_id)
+                if host is not None and host.status == "deploying":
+                    host.status = "pending"
+    deployment.events.append(
+        models.DeploymentEvent(
+            level="info",
+            event="deployment_cancel_requested",
+            message="Cancellation requested",
+        )
+    )
+    audit_service.record(
+        db,
+        actor=actor,
+        action="deployment.cancel",
+        target_type="deployment",
+        target_id=deployment.id,
+        data={"status": deployment.status},
+    )
+    db.commit()
+    db.refresh(deployment)
+    return deployment
+
+
+def retry_deployment(
+    db: Session,
+    *,
+    deployment: models.Deployment,
+    actor: models.User,
+) -> models.Deployment:
+    if deployment.status not in {"failed", "cancelled"}:
+        raise DomainError("only failed or cancelled deployments can be retried")
+    payload = DeploymentCreate(
+        environment=deployment.environment_name,
+        playbook=deployment.playbook_name,
+        hosts=[target.host_name for target in deployment.targets],
+    )
+    return create_deployment(db, payload=payload, actor=actor)
 
 
 def get_deployment(db: Session, deployment_id: str) -> models.Deployment:

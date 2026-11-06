@@ -1,0 +1,52 @@
+---
+# Register a host with the Uyuni control plane.
+#
+# Required extra vars:
+#   uyuni_server: uyuni.example.com
+# Optional:
+#   uyuni_activation_key: 1-linsec-production
+#   uyuni_bootstrap_url: https://uyuni.example.com/pub/bootstrap/bootstrap.sh
+#
+# The activation key is not a secret, but keep any Uyuni credentials in Ansible
+# Vault or the platform secret store.
+- name: Register hosts with Uyuni
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    uyuni_server: "{{ uyuni_server | mandatory }}"
+    uyuni_bootstrap_url: "https://{{ uyuni_server }}/pub/bootstrap/bootstrap.sh"
+    uyuni_activation_key: ""
+    uyuni_bootstrap_script: /var/tmp/linsec-uyuni-bootstrap.sh
+
+  tasks:
+    - name: Download the Uyuni bootstrap script
+      ansible.builtin.get_url:
+        url: "{{ uyuni_bootstrap_url }}"
+        dest: "{{ uyuni_bootstrap_script }}"
+        owner: root
+        group: root
+        mode: "0700"
+      when: not ansible_check_mode
+
+    - name: Register the host with Uyuni
+      ansible.builtin.command: >-
+        sh {{ uyuni_bootstrap_script }}
+        --server {{ uyuni_server }}
+        {% if uyuni_activation_key | length > 0 %}
+        --activationkey {{ uyuni_activation_key }}
+        {% endif %}
+      register: uyuni_registration
+      changed_when: "'already registered' not in (uyuni_registration.stdout | default(''))"
+      failed_when:
+        - uyuni_registration.rc != 0
+        - "'already registered' not in (uyuni_registration.stdout | default(''))"
+      check_mode: false
+      when: not ansible_check_mode
+
+    - name: Remove the bootstrap script
+      ansible.builtin.file:
+        path: "{{ uyuni_bootstrap_script }}"
+        state: absent
+      when: not ansible_check_mode

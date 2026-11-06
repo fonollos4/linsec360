@@ -25,3 +25,18 @@ class ConflictError(DomainError):
 class ForbiddenError(DomainError):
     status_code = 403
     code = "forbidden"
+
+
+class IntegrationNotConfigured(DomainError):
+    status_code = 503
+    code = "integration_not_configured"
+
+
+class IntegrationUnavailable(DomainError):
+    status_code = 502
+    code = "integration_unavailable"
+
+
+class RateLimited(DomainError):
+    status_code = 429
+    code = "rate_limited"

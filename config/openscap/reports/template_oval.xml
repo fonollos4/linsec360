@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LinSec360 human-readable OVAL results report.
+
+  Usage:
+    xsltproc config/openscap/reports/template_oval.xml oval-results.xml \
+      > oval-report.html
+
+  OVAL definitions are rendered with their evaluated result. This is useful for
+  debugging a failed XCCDF rule; OpenSCAP XCCDF scores remain the source of
+  truth for compliance KPIs.
+-->
+<xsl:stylesheet version="1.0"
+    xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+    xmlns:oval="http://oval.mitre.org/XMLSchema/oval-results-5"
+    xmlns:oval-def="http://oval.mitre.org/XMLSchema/oval-definitions-5"
+    exclude-result-prefixes="oval oval-def">
+  <xsl:output method="html" indent="yes" encoding="UTF-8"/>
+
+  <xsl:template match="/">
+    <html lang="en">
+      <head>
+        <meta charset="utf-8"/>
+        <title>LinSec360 OVAL results</title>
+        <style>
+          body { font-family: system-ui, sans-serif; margin: 2rem; color: #1f2933; }
+          table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+          th, td { border: 1px solid #cbd5e1; padding: .45rem .6rem; text-align: left; }
+          th { background: #e2e8f0; }
+        </style>
+      </head>
+      <body>
+        <h1>LinSec360 OVAL results</h1>
+        <table>
+          <thead>
+            <tr>
+              <th>Definition</th>
+              <th>Result</th>
+            </tr>
+          </thead>
+          <tbody>
+            <xsl:for-each select="//oval:definition">
+              <tr>
+                <td><xsl:value-of select="@definition_id"/></td>
+                <td><xsl:value-of select="@result"/></td>
+              </tr>
+            </xsl:for-each>
+          </tbody>
+        </table>
+        <xsl:if test="not(//oval:definition)">
+          <p>No OVAL definition results were found in this document.</p>
+        </xsl:if>
+      </body>
+    </html>
+  </xsl:template>
+</xsl:stylesheet>

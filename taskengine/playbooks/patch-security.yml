@@ -1,0 +1,74 @@
+---
+# Security-only patch fallback.
+#
+# Uyuni is the primary patch control plane. This playbook is the break-glass
+# path for hosts that are not (yet) registered with Uyuni. It never reboots
+# automatically: set patch_reboot_allowed=true explicitly.
+- name: Apply security-only package updates
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    patch_reboot_allowed: false
+    patch_reboot_timeout_seconds: 900
+
+  tasks:
+    - name: Record pre-patch boot identity
+      ansible.builtin.command: cat /proc/sys/kernel/random/boot_id
+      register: patch_boot_before
+      changed_when: false
+
+    - name: Update the package cache on Debian family hosts
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Install security updates on Debian family hosts
+      ansible.builtin.apt:
+        upgrade: safe
+        default_release: "{{ ansible_distribution_release }}-security"
+      when: ansible_os_family == "Debian"
+
+    - name: Install security updates on Red Hat family hosts
+      ansible.builtin.dnf:
+        name: "*"
+        state: latest
+        security: true
+        update_only: true
+      when: ansible_os_family == "RedHat"
+
+    - name: Check whether a reboot is required on Debian family hosts
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: patch_reboot_required_debian
+      when: ansible_os_family == "Debian"
+
+    - name: Check whether a reboot is required on Red Hat family hosts
+      ansible.builtin.command: needs-restarting -r
+      register: patch_reboot_required_redhat
+      changed_when: false
+      failed_when: false
+      when: ansible_os_family == "RedHat"
+
+    - name: Reboot the host when required and explicitly allowed
+      ansible.builtin.reboot:
+        reboot_timeout: "{{ patch_reboot_timeout_seconds }}"
+        msg: "LinSec360 security patch reboot"
+      when:
+        - patch_reboot_allowed | bool
+        - (ansible_os_family == 'Debian' and patch_reboot_required_debian.stat.exists)
+          or (ansible_os_family == 'RedHat' and patch_reboot_required_redhat.rc == 1)
+
+    - name: Record post-patch boot identity
+      ansible.builtin.command: cat /proc/sys/kernel/random/boot_id
+      register: patch_boot_after
+      changed_when: false
+
+    - name: Report the patch outcome
+      ansible.builtin.debug:
+        msg:
+          host: "{{ inventory_hostname }}"
+          rebooted: "{{ patch_boot_before.stdout != patch_boot_after.stdout }}"
+          reboot_allowed: "{{ patch_reboot_allowed }}"

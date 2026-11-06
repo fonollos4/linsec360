@@ -1,0 +1,228 @@
+---
+- name: Initialise the hardening report
+  ansible.builtin.set_fact:
+    hardening_checks: []
+    hardening_sshd_map: {}
+
+- name: Read the effective sshd configuration
+  ansible.builtin.command: sshd -T
+  register: hardening_sshd
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: hardening_manage_ssh | bool
+
+- name: Normalise the effective sshd configuration
+  ansible.builtin.set_fact:
+    hardening_sshd_map: >-
+      {{ dict(hardening_sshd.stdout_lines | default([])
+        | select('search', '\s')
+        | map('regex_replace', '^\s+', '')
+        | map('regex_replace', '\s+', ' ')
+        | map('split', ' ', 1) | list) }}
+  when:
+    - hardening_manage_ssh | bool
+    - hardening_sshd.rc | default(1) == 0
+
+- name: Record SSH checks
+  ansible.builtin.set_fact:
+    hardening_checks: >-
+      {{ hardening_checks + [item | combine({
+        'actual': hardening_sshd_map.get(item.key, 'unknown'),
+        'status': ('pass' if hardening_sshd_map.get(item.key, 'unknown') == item.expected else 'fail')
+      })] }}
+  loop: "{{ hardening_ssh_checks }}"
+  when: hardening_manage_ssh | bool
+
+- name: Read current sysctl values
+  ansible.builtin.command: "sysctl -n {{ item.key }}"
+  loop: "{{ hardening_sysctl_checks }}"
+  register: hardening_sysctl
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: hardening_manage_sysctl | bool
+
+- name: Record sysctl checks
+  ansible.builtin.set_fact:
+    hardening_checks: >-
+      {% set result = hardening_sysctl.results[idx] %}
+      {% set actual = (result.stdout | default('') | trim)
+         if result.rc | default(1) == 0 else 'unknown' %}
+      {{ hardening_checks + [item | combine({
+        'actual': actual or 'unknown',
+        'status': ('unknown' if actual == '' else ('pass' if actual == item.expected else 'fail'))
+      })] }}
+  loop: "{{ hardening_sysctl_checks }}"
+  loop_control:
+    index_var: idx
+  when: hardening_manage_sysctl | bool
+
+- name: Read the audit subsystem state
+  ansible.builtin.shell: auditctl -s 2>/dev/null | awk '/^enabled/{print $2}'
+  register: hardening_audit_status
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: hardening_manage_auditd | bool
+
+- name: Collect service facts
+  ansible.builtin.service_facts:
+
+- name: Read the SELinux mode
+  ansible.builtin.command: getenforce
+  register: hardening_selinux_mode_result
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: hardening_manage_selinux | bool
+
+- name: Read SELinux booleans
+  ansible.builtin.command: "getsebool {{ item.key }}"
+  loop: "{{ hardening_selinux_booleans | dict2items }}"
+  register: hardening_selinux_bool_result
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: hardening_manage_selinux | bool
+
+- name: Record SELinux checks
+  ansible.builtin.set_fact:
+    hardening_checks: >-
+      {{ hardening_checks + [item | combine({
+        'actual': (hardening_selinux_mode_result.stdout | default('unknown') | trim) or 'unknown',
+        'status': ('pass' if (hardening_selinux_mode_result.stdout | default('') | trim) == item.expected else 'fail')
+      })] }}
+  loop: "{{ hardening_selinux_checks | selectattr('boolean', 'undefined') | list }}"
+  when: hardening_manage_selinux | bool
+
+- name: Record SELinux boolean checks
+  ansible.builtin.set_fact:
+    hardening_checks: >-
+      {% set result = hardening_selinux_bool_result.results[idx] %}
+      {% set actual = (result.stdout | default('') | split('-->') | last | trim)
+         if result.rc | default(1) == 0 else 'unknown' %}
+      {{ hardening_checks + [item | combine({
+        'actual': actual,
+        'status': ('pass' if actual == item.expected else 'fail')
+      })] }}
+  loop: "{{ hardening_selinux_checks | selectattr('boolean', 'defined') | list }}"
+  loop_control:
+    index_var: idx
+  when: hardening_manage_selinux | bool
+
+- name: Check auditd service state
+  ansible.builtin.set_fact:
+    hardening_checks: >-
+      {{ hardening_checks + [{
+        'control': 'auditd.enabled',
+        'category': 'auditd',
+        'title': 'auditd is running and enabled at boot',
+        'expected': 'active',
+        'actual': ansible_facts.services.get('auditd.service', {}).get('state', 'unknown'),
+        'status': ('pass' if ansible_facts.services.get('auditd.service', {}).get('state', 'unknown') == 'running' else 'fail')
+      }] }}
+  when: hardening_manage_auditd | bool
+
+- name: Record audit immutability
+  ansible.builtin.set_fact:
+    hardening_checks: >-
+      {{ hardening_checks + [{
+        'control': 'auditd.immutable',
+        'category': 'auditd',
+        'title': 'Audit rules are immutable',
+        'expected': '2',
+        'actual': (hardening_audit_status.stdout | default('unknown') | trim) or 'unknown',
+        'status': ('pass' if (hardening_audit_status.stdout | default('') | trim) == '2' else 'fail')
+      }] }}
+  when: hardening_manage_auditd | bool
+
+- name: Read PAM policy files
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+  loop: "{{ hardening_pam_checks }}"
+  register: hardening_pam_stats
+  when: hardening_manage_pam | bool
+
+- name: Record PAM checks
+  ansible.builtin.set_fact:
+    hardening_checks: >-
+      {% set actual = 'present' if hardening_pam_stats.results[idx].stat.exists else 'absent' %}
+      {{ hardening_checks + [item | combine({
+        'actual': actual,
+        'status': ('pass' if actual == item.expected else 'fail')
+      })] }}
+  loop: "{{ hardening_pam_checks }}"
+  loop_control:
+    index_var: idx
+  when: hardening_manage_pam | bool
+
+- name: Record package checks
+  ansible.builtin.set_fact:
+    hardening_checks: >-
+      {% set found = item.packages | select('in', ansible_facts.packages | default({})) | list %}
+      {% set actual = 'present' if found | length > 0 else 'absent' %}
+      {{ hardening_checks + [item | combine({
+        'actual': actual,
+        'status': ('pass' if actual == item.expected else 'fail')
+      })] }}
+  loop: "{{ hardening_package_checks }}"
+  when: hardening_manage_packages | bool
+
+- name: Build the hardening report
+  ansible.builtin.set_fact:
+    hardening_report:
+      host: "{{ inventory_hostname }}"
+      generated_at: "{{ ansible_date_time.iso8601 | default('unknown') }}"
+      distribution: >-
+        {{ ansible_distribution | default('unknown') }}
+        {{ ansible_distribution_version | default('') }}
+      check_mode: "{{ ansible_check_mode }}"
+      checks: "{{ hardening_checks }}"
+
+- name: Ensure the hardening report directory exists
+  ansible.builtin.file:
+    path: "{{ hardening_report_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  check_mode: false
+
+- name: Write the hardening report
+  ansible.builtin.copy:
+    dest: "{{ hardening_report_path }}"
+    content: "{{ hardening_report | to_nice_json }}\n"
+    owner: "{{ hardening_report_owner }}"
+    group: "{{ hardening_report_group }}"
+    mode: "{{ hardening_report_mode }}"
+  check_mode: false
+
+- name: Send the hardening report to LinSec360
+  ansible.builtin.uri:
+    url: "{{ hardening_ingest_url.rstrip('/') }}/api/v1/hardening/results"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ hardening_api_token }}"
+      Content-Type: application/json
+    body_format: json
+    body:
+      host_name: "{{ inventory_hostname }}"
+      checks: "{{ hardening_checks }}"
+    status_code: [200, 201]
+  register: hardening_ingest
+  failed_when: false
+  when:
+    - hardening_ingest_url | length > 0
+    - hardening_api_token | length > 0
+    - not ansible_check_mode
+
+- name: Warn when the hardening report could not be ingested
+  ansible.builtin.debug:
+    msg: >-
+      LinSec360 hardening ingestion failed (status {{ hardening_ingest.status | default('n/a') }}):
+      {{ hardening_ingest.msg | default('no response') }}
+  when:
+    - hardening_ingest_url | length > 0
+    - hardening_ingest is defined
+    - hardening_ingest.status | default(0) not in [200, 201]

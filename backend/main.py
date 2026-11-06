@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
@@ -80,7 +81,15 @@ async def lifespan(app: FastAPI):
         logger.info("Imported %s bundled playbook(s)", imported)
     _bootstrap_admin()
     logger.info("LinSec360 API %s started", __version__)
-    yield
+    from .services.operations_service import scheduler_loop
+
+    scheduler_task = asyncio.create_task(scheduler_loop())
+    try:
+        yield
+    finally:
+        scheduler_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await scheduler_task
 
 
 def _error(
@@ -205,6 +214,30 @@ def create_app() -> FastAPI:
                 "database is not ready",
             )
         return {"status": "ready", "checks": {"database": "ok"}}
+
+    @app.get("/metrics", include_in_schema=False)
+    def metrics():
+        from fastapi.responses import PlainTextResponse
+        from sqlalchemy import func
+
+        from .db import session_scope
+
+        with session_scope() as db:
+            host_total = db.query(func.count(models.Host.id)).scalar() or 0
+            deployment_total = db.query(func.count(models.Deployment.id)).scalar() or 0
+            alert_total = db.query(func.count(models.Alert.id)).scalar() or 0
+        body = (
+            "# HELP linsec_hosts_total Inventory host count.\n"
+            "# TYPE linsec_hosts_total gauge\n"
+            f"linsec_hosts_total {host_total}\n"
+            "# HELP linsec_deployments_total Deployment count.\n"
+            "# TYPE linsec_deployments_total gauge\n"
+            f"linsec_deployments_total {deployment_total}\n"
+            "# HELP linsec_alerts_total Stored alert count.\n"
+            "# TYPE linsec_alerts_total gauge\n"
+            f"linsec_alerts_total {alert_total}\n"
+        )
+        return PlainTextResponse(body, media_type="text/plain")
 
     @app.get("/", include_in_schema=False)
     def root() -> dict:

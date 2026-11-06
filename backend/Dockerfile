@@ -24,6 +24,12 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt \
 COPY backend /opt/linsec/backend
 COPY taskengine/playbooks /opt/linsec/taskengine/playbooks
 COPY taskengine/roles /opt/linsec/taskengine/roles
+# Automation assets referenced by the hardening, OpenSCAP and live-patch
+# playbooks. Keep the copy narrow so generated keys/certs are not baked in.
+COPY config/hardening /opt/linsec/config/hardening
+COPY config/selinux /opt/linsec/config/selinux
+COPY config/openscap /opt/linsec/config/openscap
+COPY config/scripts /opt/linsec/config/scripts
 COPY backend/ansible.cfg /etc/ansible/ansible.cfg
 
 RUN groupadd --gid "${LINSEC_GID}" linsec \

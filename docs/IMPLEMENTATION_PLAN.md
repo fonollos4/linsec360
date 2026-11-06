@@ -1,9 +1,10 @@
 # LinSec360 — implementation plan (post-MVP → working product)
 
-Status: planning  
-Scope: turn the current Wazuh + Flask + Ansible prototype into a maintained,
+Status: implementation complete for the current product scope
+Scope: maintain the Wazuh + FastAPI + React + Ansible product as a maintained,
 multi-layer Linux security platform with a real UI, real KPIs, and auditable
-operations.
+operations. The five-layer backend and automation assets are implemented; the
+remaining work is the React SPA, production hardening, and end-to-end drills.
 
 Assumptions:
 
@@ -52,8 +53,8 @@ Key decisions:
 
 1. **FastAPI (approved).** The product is API-first, so use a typed framework:
    Pydantic v2 contracts, dependency-injected RBAC, and an OpenAPI schema that
-   generates the TypeScript client for the React app. The legacy Flask app is
-   frozen during the transition and removed after UI parity.
+   generates the TypeScript client for the React app. Legacy Flask assets are
+   removed from the supported deployment.
 2. **PostgreSQL + SQLAlchemy 2.0 + Alembic (approved).** SQLite is fine for
    tests, not for concurrent job state, KPI history, or audit trails.
 3. **Redis + RQ for jobs.** Replace ad-hoc threads; support retries, timeouts,
@@ -137,9 +138,8 @@ Key decisions:
 
 ### 3.1 Structure (approved baseline)
 
-The new backend lives in `backend/` and runs beside the frozen legacy `app/`
-until the React UI reaches parity. After cutover, `app/`, `__web_ui_legacy/`,
-and the legacy `ansible` compose service are deleted.
+The new backend lives in `backend/`. The legacy Flask UI/API and legacy Compose
+stack are not part of the supported deployment.
 
 ```text
 backend/
@@ -277,7 +277,8 @@ conflicts.
 
 ### 3.7 Implemented foundation (2026-11-06)
 
-The first Phase-1 slice is in `backend/` and covered by 31 backend tests:
+The backend and the five automation layers are in `backend/`, `taskengine/` and
+`config/`, covered by 44 backend tests:
 
 - FastAPI app factory, Pydantic v2 settings, structured error envelope.
 - SQLAlchemy 2.0 models for users, sessions, environments, groups, hosts,
@@ -293,14 +294,22 @@ The first Phase-1 slice is in `backend/` and covered by 31 backend tests:
 - Inventories are generated from the DB; deployments always pass `--limit`.
 - Redis/RQ queue abstraction with an in-process fallback for development.
 - `docker-compose.v2.yml` for PostgreSQL + Redis + API + worker.
+- Login rate limiting, hashed API tokens, deployment cancel/retry, and SSE log
+  streaming.
+- Wazuh API/indexer client, OpenSCAP ingestion, Uyuni client, native live-patch
+  collection, hardening drift ingestion, alerts and KPI snapshots.
+- Hardening/OpenSCAP/Wazuh/Uyuni/live-patch playbooks and the shared
+  `config/hardening/baseline.yml`.
 
 Deliberate deviations from the target in this slice:
 
 - Sessions are in PostgreSQL, not Redis. This removes a dependency for auth and
   is easy to move later; revocation already works.
-- Login rate limiting, API tokens, OIDC, cancellation/retry, and SSE streaming
-  are not implemented yet.
-- The React SPA and Wazuh/OpenSCAP/KernelCare clients are still pending.
+- OIDC is not implemented yet; local accounts and bearer API tokens are.
+- The React SPA shell and core operator views are implemented. KPI charts,
+  scheduled reports, and Playwright accessibility coverage remain.
+- Integrations report `unknown` / `503 integration_not_configured` until their
+  endpoints and credentials are supplied; nothing is synthesized.
 
 ---
 
@@ -319,14 +328,20 @@ Deliberate deviations from the target in this slice:
 - Persist per-control results → drift score; show on host detail and overview.
 - Provide “check”, “apply”, and “remediate selected controls only”.
 
-### 4.2 Patching / KernelCare
+### 4.2 Patching / Uyuni + native klp
 
-- KernelCare: install agent, license from secret, verify `kcarectl --info`,
-  track kernel version vs patched state, surface exposure days.
-- Package patching: CVE-driven runs using Wazuh vulnerability data; allow
-  security-only vs full upgrade.
+- Uyuni is the patch/repository control plane: system registration, activation
+  keys, channel assignment, package and errata inventory
+  (`taskengine/playbooks/uyuni-register.yml`, `backend/services/uyuni_service.py`).
+- Native kernel live-patching uses the free in-kernel `klp` framework, plus
+  `canonical-livepatch` or `kpatch` when already installed. KernelCare is not a
+  dependency (`config/scripts/livepatch_report.py`,
+  `taskengine/playbooks/livepatch-check.yml`).
+- Package patching: CVE/errata-driven runs; security-only updates through Uyuni,
+  with `patch-security.yml` as the explicit fallback for unregistered hosts.
 - Maintenance windows, reboot gating, pre/post health checks, rollback notes.
-- Patch compliance KPI: pending, applied, failed, reboot required.
+- Patch compliance KPI: pending, applied, failed, reboot required. Exposure days
+  stay `unknown` unless an operator supplies the kernel publication date.
 
 ### 4.3 OpenSCAP compliance
 
@@ -347,11 +362,15 @@ Deliberate deviations from the target in this slice:
   require explicit operator confirmation for destructive actions.
 - Agent health KPI: connected, disconnected, never connected, outdated.
 
-### 4.5 OpenUBA
+### 4.5 Supervision analytics (Wazuh Dashboard/Indexer)
 
-- Deploy OpenUBA as an optional Compose profile.
-- Feed normalized audit/Wazuh events; store anomaly scores against hosts.
-- Surface anomalies as a detection source; link to incidents in a later release.
+- No separate analytics platform is deployed. OpenUBA is out of scope; Wazuh
+  Dashboard/Indexer provides SIEM, correlation, and behavioral views.
+- Store normalized alerts and KPI snapshots in the platform DB for trends and
+  mean time to acknowledge/respond; raw events remain in Wazuh.
+- Add correlation rules and dashboards for authentication, privilege escalation,
+  process execution, and file-integrity events.
+- Document retention, index templates, and alert tuning.
 
 ---
 
@@ -370,7 +389,7 @@ Every KPI stores: definition, scope, value, source, timestamp, and whether it is
 | MTTR | mean time from first seen to resolved | Wazuh + platform |
 | Patch coverage | hosts with no pending security patches / hosts | Patching |
 | Reboot required | count | Patching |
-| Kernel exposure | days since vulnerable kernel released | KernelCare |
+| Kernel exposure | days since vulnerable kernel released | Uyuni + native klp |
 | Hardening drift | hosts with failed controls | Hardening |
 | SELinux non-compliant | hosts not enforcing | SELinux |
 | Deployment success rate | succeeded / finished in range | Platform |
@@ -392,8 +411,8 @@ Delivery:
 ### Compose profiles
 
 - `core`: api, web, postgres, redis, worker, nginx.
-- `wazuh`: manager, indexer, dashboard (existing).
-- `openuba`: optional analytics stack.
+- `wazuh`: manager, indexer, dashboard (existing). This is also the SIEM and
+  behavioral-analytics layer.
 - `dev`: sqlite + mock Wazuh adapter, no TLS.
 
 ### Production requirements
@@ -428,9 +447,9 @@ Delivery:
 | 4 | Wazuh integration + detection KPIs | Real agent/alert/vuln data in UI | 2 weeks |
 | 5 | Hardening + SELinux | Baseline apply/check/drift on a test host | 2–3 weeks |
 | 6 | OpenSCAP compliance | Real scan + score + findings view | 2–3 weeks |
-| 7 | Patching + KernelCare | Patch runs + kernel exposure KPI | 2–3 weeks |
+| 7 | Patching + Uyuni/native klp | Patch runs + kernel exposure KPI | 2–3 weeks |
 | 8 | Remaining UI (compliance/patching/settings/audit) + reports | Full operator workflow | 3 weeks |
-| 9 | OpenUBA + anomalies | Anomaly source visible in detection | 2–3 weeks |
+| 9 | Wazuh correlation + active response | Detection/response runbooks and tuning | 2–3 weeks |
 | 10 | Production hardening, E2E, docs, runbooks | Staging sign-off + DR drill | 2–3 weeks |
 
 Total: roughly **18–26 person-weeks**. With two engineers in parallel
@@ -449,8 +468,9 @@ Ship backend contracts first so the SPA is built against stable APIs.
 | Wazuh API version drift | Pin 4.12, wrap the client, contract tests |
 | Ansible privilege escalation | Explicit `become` policy, allowlisted playbooks, audit |
 | Secrets in UI logs | Write-only secret fields, redaction in logs/errors |
-| KernelCare licensing/offline | Feature flag; surface “not configured” instead of failing |
-| OpenUBA maturity | Optional profile; isolate failures from core KPIs |
+| Live-patch state unavailable | Report `unknown` from sysfs/kpatch/canonical-livepatch; never fabricate exposure days |
+| Uyuni API drift | Pin the API version, wrap the client, contract tests |
+| Wazuh analytics scope creep | Use the shipped Dashboard/Indexer; no extra analytics stack |
 | Scope creep across five layers | Phase gates; each phase has a demo + exit criteria |
 | Data volume from alerts | Retention + aggregation; store summaries, not raw firehose |
 | SQLite → Postgres migration | Alembic from day one; migration test in CI |
@@ -465,9 +485,14 @@ Ship backend contracts first so the SPA is built against stable APIs.
 - [x] `/api/v1` for auth, hosts, playbooks, deployments, KPIs, and audit.
 - [x] Redis/RQ deployment queue (in-process fallback for local development).
 - [x] Explicit unknown KPI states (`open_vulnerabilities`, `compliance_score`).
-- [ ] Scaffold `web/` with Vite + React + TS + Tailwind + shadcn and build the
-      Overview/Hosts/Deployments parity views against `/api/v1`.
-- [ ] Add login rate limiting, API tokens, and cancellation/retry.
-- [ ] Add SSE deployment log streaming and KPI history charts.
-- [ ] Add CI (pytest + ruff + mypy + tsc + vitest) before Wazuh integration.
-- [ ] Freeze/retire the legacy Flask UI only after React parity is verified.
+- [x] Login rate limiting, hashed API tokens, and deployment cancellation/retry.
+- [x] SSE deployment log streaming.
+- [x] Wazuh, OpenSCAP, Uyuni, live-patch, hardening, alert, and KPI services.
+- [x] Hardening role, OpenSCAP profiles, Wazuh/Uyuni/live-patch playbooks.
+- [x] Backup/restore scripts with checksums and retention.
+- [x] KPI snapshot history API with metric, period, and limit filters.
+- [x] Scaffold `web/` with Vite + React + TS and build the core operator views
+      against `/api/v1`.
+- [ ] Add KPI history charts and scheduled reports.
+- [x] Add backend CI (pytest + ruff + mypy).
+- [x] Add frontend lint/build validation for the React SPA.

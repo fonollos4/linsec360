@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LinSec360 human-readable ARF report.
+
+  Usage:
+    xsltproc config/openscap/reports/template_arf.xml results-arf.xml \
+      > compliance-report.html
+
+  The authoritative data is the ARF/XCCDF result itself; this stylesheet only
+  renders the rule results and scores for operators and auditors.
+-->
+<xsl:stylesheet version="1.0"
+    xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+    xmlns:xccdf="http://checklists.nist.gov/xccdf/1.2"
+    exclude-result-prefixes="xccdf">
+  <xsl:output method="html" indent="yes" encoding="UTF-8"/>
+
+  <xsl:template match="/">
+    <html lang="en">
+      <head>
+        <meta charset="utf-8"/>
+        <title>LinSec360 OpenSCAP compliance report</title>
+        <style>
+          body { font-family: system-ui, sans-serif; margin: 2rem; color: #1f2933; }
+          table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+          th, td { border: 1px solid #cbd5e1; padding: .45rem .6rem; text-align: left; }
+          th { background: #e2e8f0; }
+          .fail { background: #fee2e2; }
+          .pass { background: #dcfce7; }
+          .unknown { background: #fef3c7; }
+        </style>
+      </head>
+      <body>
+        <h1>LinSec360 OpenSCAP compliance report</h1>
+        <xsl:for-each select="//xccdf:TestResult">
+          <h2>
+            <xsl:value-of select="@id"/>
+            <xsl:text> — profile </xsl:text>
+            <xsl:value-of select="@profile"/>
+          </h2>
+          <p>
+            Score:
+            <strong><xsl:value-of select="xccdf:score"/></strong>
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Rule</th>
+                <th>Result</th>
+                <th>Severity</th>
+              </tr>
+            </thead>
+            <tbody>
+              <xsl:for-each select="xccdf:rule-result">
+                <xsl:variable name="result" select="xccdf:result"/>
+                <tr>
+                  <xsl:attribute name="class">
+                    <xsl:choose>
+                      <xsl:when test="$result='pass'">pass</xsl:when>
+                      <xsl:when test="$result='fail'">fail</xsl:when>
+                      <xsl:otherwise>unknown</xsl:otherwise>
+                    </xsl:choose>
+                  </xsl:attribute>
+                  <td><xsl:value-of select="@idref"/></td>
+                  <td><xsl:value-of select="$result"/></td>
+                  <td><xsl:value-of select="@severity"/></td>
+                </tr>
+              </xsl:for-each>
+            </tbody>
+          </table>
+        </xsl:for-each>
+        <xsl:if test="not(//xccdf:TestResult)">
+          <p>No XCCDF TestResult elements were found in this document.</p>
+        </xsl:if>
+      </body>
+    </html>
+  </xsl:template>
+</xsl:stylesheet>

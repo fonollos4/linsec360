@@ -1,0 +1,158 @@
+---
+# LinSec360 hardening role defaults.
+#
+# Every value can be overridden per host/group. The role is check-mode safe:
+# `ansible-playbook --check` reports what would change and still collects the
+# current state for drift reporting.
+
+hardening_apply: true
+hardening_report_dir: /var/log/linsec
+# Include the host name so a flat fetch from many hosts cannot overwrite files.
+hardening_report_path: "{{ hardening_report_dir }}/{{ inventory_hostname }}-hardening.json"
+hardening_report_owner: root
+hardening_report_group: root
+hardening_report_mode: "0600"
+
+# Optional: POST the collected report to the LinSec360 API.
+hardening_ingest_url: ""
+hardening_api_token: ""
+
+# Path to the repository config directory on the controller. The backend worker
+# passes this explicitly; the fallback keeps manual runs from taskengine/ working.
+linsec_config_dir: "{{ playbook_dir | default('.') }}/../../config"
+
+hardening_manage_ssh: true
+hardening_ssh_config_path: /etc/ssh/sshd_config.d/99-linsec-hardening.conf
+hardening_ssh_permit_root_login: "no"
+hardening_ssh_password_authentication: "no"
+hardening_ssh_max_auth_tries: 4
+hardening_ssh_client_alive_interval: 300
+hardening_ssh_client_alive_count_max: 2
+hardening_ssh_x11_forwarding: "no"
+hardening_ssh_allow_agent_forwarding: "no"
+
+hardening_ssh_checks:
+  - control: ssh.permit_root_login
+    category: ssh
+    title: Disable direct root SSH login
+    key: permitrootlogin
+    expected: "no"
+  - control: ssh.password_authentication
+    category: ssh
+    title: Disable SSH password authentication
+    key: passwordauthentication
+    expected: "no"
+  - control: ssh.max_auth_tries
+    category: ssh
+    title: Limit SSH authentication attempts
+    key: maxauthtries
+    expected: "4"
+  - control: ssh.client_alive_interval
+    category: ssh
+    title: Enforce SSH idle timeout
+    key: clientaliveinterval
+    expected: "300"
+
+hardening_manage_sysctl: true
+hardening_sysctl_file: /etc/sysctl.d/99-linsec-hardening.conf
+hardening_sysctl:
+  kernel.randomize_va_space: 2
+  net.ipv4.tcp_syncookies: 1
+  net.ipv4.ip_forward: 0
+  net.ipv4.conf.all.accept_redirects: 0
+  net.ipv4.conf.all.send_redirects: 0
+  net.ipv4.conf.all.accept_source_route: 0
+  net.ipv6.conf.all.accept_redirects: 0
+  fs.protected_hardlinks: 1
+  fs.protected_symlinks: 1
+  kernel.dmesg_restrict: 1
+  kernel.kptr_restrict: 2
+
+hardening_sysctl_checks:
+  - control: kernel.aslr
+    category: kernel
+    title: Enable full address-space layout randomisation
+    key: kernel.randomize_va_space
+    expected: "2"
+  - control: kernel.syn_cookies
+    category: kernel
+    title: Enable TCP SYN cookies
+    key: net.ipv4.tcp_syncookies
+    expected: "1"
+  - control: kernel.ip_forward
+    category: kernel
+    title: Disable IPv4 forwarding unless the host is a router
+    key: net.ipv4.ip_forward
+    expected: "0"
+  - control: kernel.accept_redirects
+    category: kernel
+    title: Do not accept ICMP redirects
+    key: net.ipv4.conf.all.accept_redirects
+    expected: "0"
+
+hardening_manage_auditd: true
+hardening_audit_rules_path: /etc/audit/rules.d/99-linsec.rules
+hardening_audit_rules_source: "{{ linsec_config_dir }}/selinux/audit.rules"
+
+hardening_manage_pam: true
+hardening_pwquality_path: /etc/security/pwquality.conf
+hardening_pwquality_minlen: 14
+hardening_pwquality_minclass: 3
+hardening_faillock_deny: 5
+hardening_faillock_unlock_time: 900
+
+hardening_manage_packages: true
+hardening_remove_packages:
+  - telnetd
+  - telnet-server
+  - rsh-server
+  - rsh
+  - ypserv
+  - tftp-server
+  - xinetd
+hardening_package_checks:
+  - control: services.telnet_disabled
+    category: services
+    title: Telnet is not installed
+    packages: [telnetd, telnet-server]
+    expected: absent
+  - control: services.rsh_disabled
+    category: services
+    title: Legacy rsh is not installed
+    packages: [rsh-server, rsh]
+    expected: absent
+
+hardening_pam_checks:
+  - control: pam.pwquality
+    category: pam
+    title: Password quality module is configured
+    path: "{{ hardening_pwquality_path }}"
+    expected: present
+  - control: pam.faillock
+    category: pam
+    title: Account lockout is configured
+    path: /etc/security/faillock.conf
+    expected: present
+
+hardening_manage_selinux: true
+hardening_selinux_mode: enforcing
+hardening_selinux_policy: targeted
+hardening_selinux_config_path: /etc/selinux/config
+hardening_selinux_booleans:
+  unconfined_daemons: false
+  unconfined_service_units: false
+hardening_selinux_checks:
+  - control: selinux.enforcing
+    category: selinux
+    title: SELinux is enforcing
+    expected: Enforcing
+  - control: selinux.no_unconfined_daemons
+    category: selinux
+    title: Unconfined daemons are disabled
+    boolean: unconfined_daemons
+    expected: "off"
+  - control: selinux.no_unconfined_service_units
+    category: selinux
+    title: Unconfined service units are disabled
+    boolean: unconfined_service_units
+    expected: "off"

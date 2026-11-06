@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import secrets
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -149,6 +150,61 @@ def _token_from_request(request: Request) -> str | None:
     return None
 
 
+def token_from_request(request: Request) -> str | None:
+    return _token_from_request(request)
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def create_api_token(
+    db: Session,
+    *,
+    user: models.User,
+    name: str,
+    expires_at: datetime | None = None,
+) -> tuple[models.ApiToken, str]:
+    """Create a token and return it once. Only the hash is persisted."""
+    plaintext = f"linsec_{secrets.token_urlsafe(32)}"
+    token = models.ApiToken(
+        name=name,
+        token_hash=_hash_token(plaintext),
+        role=user.role,
+        created_by_id=user.id,
+        expires_at=expires_at,
+    )
+    db.add(token)
+    db.flush()
+    return token, plaintext
+
+
+def authenticate_api_token(db: Session, token: str) -> models.User | None:
+    if not token.startswith("linsec_"):
+        return None
+    record = (
+        db.query(models.ApiToken)
+        .filter(models.ApiToken.token_hash == _hash_token(token))
+        .one_or_none()
+    )
+    if record is None or record.revoked_at is not None:
+        return None
+    expires_at = _aware(record.expires_at)
+    if expires_at is not None and expires_at <= datetime.now(UTC):
+        return None
+    user = db.get(models.User, record.created_by_id) if record.created_by_id else None
+    if user is None or not user.is_active:
+        return None
+    record.last_used_at = datetime.now(UTC)
+    db.commit()
+    return user
+
+
+def revoke_api_token(db: Session, token: models.ApiToken) -> None:
+    token.revoked_at = datetime.now(UTC)
+    db.commit()
+
+
 def get_current_user(
     request: Request,
     db: Session = Depends(get_db),
@@ -162,6 +218,9 @@ def get_current_user(
 
     payload = decode_session_token(token)
     if not payload or not payload.get("sub") or not payload.get("jti"):
+        api_user = authenticate_api_token(db, token)
+        if api_user is not None:
+            return api_user
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid session",

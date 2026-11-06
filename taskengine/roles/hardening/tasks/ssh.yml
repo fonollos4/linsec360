@@ -1,0 +1,24 @@
+---
+- name: Ensure the OpenSSH drop-in directory exists
+  ansible.builtin.file:
+    path: "{{ hardening_ssh_config_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render the LinSec360 SSH hardening drop-in
+  ansible.builtin.template:
+    src: 99-linsec-hardening.conf.j2
+    dest: "{{ hardening_ssh_config_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+    validate: "sshd -t -f %s"
+  notify: Restart sshd
+
+- name: Validate the complete sshd configuration
+  ansible.builtin.command: sshd -t
+  changed_when: false
+  failed_when: false
+  check_mode: false

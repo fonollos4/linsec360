@@ -1,0 +1,9 @@
+# Managed by LinSec360. Do not edit manually.
+PermitRootLogin {{ hardening_ssh_permit_root_login }}
+PasswordAuthentication {{ hardening_ssh_password_authentication }}
+KbdInteractiveAuthentication {{ hardening_ssh_password_authentication }}
+MaxAuthTries {{ hardening_ssh_max_auth_tries }}
+ClientAliveInterval {{ hardening_ssh_client_alive_interval }}
+ClientAliveCountMax {{ hardening_ssh_client_alive_count_max }}
+X11Forwarding {{ hardening_ssh_x11_forwarding }}
+AllowAgentForwarding {{ hardening_ssh_allow_agent_forwarding }}

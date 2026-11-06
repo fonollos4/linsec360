@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from .. import models
 from ..config import get_settings
-from ..db import get_db
+from ..db import get_db, session_scope
 from ..errors import ForbiddenError
 from ..schemas import (
     DeploymentCreate,
@@ -48,6 +50,100 @@ def create_deployment(
 ) -> DeploymentOut:
     deployment = deployment_service.create_deployment(db, payload=payload, actor=user)
     return deployment_service.serialize(deployment)
+
+
+@router.post("/{deployment_id}/cancel", response_model=DeploymentOut)
+def cancel_deployment(
+    deployment_id: str,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(require_roles("admin", "operator")),
+) -> DeploymentOut:
+    deployment = deployment_service.get_deployment(db, deployment_id)
+    deployment = deployment_service.cancel_deployment(
+        db, deployment=deployment, actor=user
+    )
+    return deployment_service.serialize(deployment)
+
+
+@router.post("/{deployment_id}/retry", response_model=DeploymentOut, status_code=202)
+def retry_deployment(
+    deployment_id: str,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(require_roles("admin", "operator")),
+) -> DeploymentOut:
+    deployment = deployment_service.get_deployment(db, deployment_id)
+    replacement = deployment_service.retry_deployment(
+        db, deployment=deployment, actor=user
+    )
+    return deployment_service.serialize(replacement)
+
+
+@router.get("/{deployment_id}/events/stream")
+async def stream_events(
+    deployment_id: str,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+) -> StreamingResponse:
+    deployment = deployment_service.get_deployment(db, deployment_id)
+    log_path = Path(deployment.log_path)
+
+    async def generator():
+        seen_event = 0
+        log_offset = 0
+        terminal = {"succeeded", "failed", "cancelled"}
+        for _ in range(1800):  # hard cap: 30 minutes at one-second intervals
+            with session_scope() as stream_db:
+                current = stream_db.get(models.Deployment, deployment_id)
+                if current is None:
+                    yield "event: error\ndata: {\"message\":\"deployment removed\"}\n\n"
+                    return
+                events = (
+                    stream_db.query(models.DeploymentEvent)
+                    .filter(
+                        models.DeploymentEvent.deployment_id == deployment_id,
+                        models.DeploymentEvent.id > seen_event,
+                    )
+                    .order_by(models.DeploymentEvent.id)
+                    .all()
+                )
+                for event in events:
+                    seen_event = event.id
+                    payload = {
+                        "event": event.event,
+                        "level": event.level,
+                        "message": event.message,
+                        "data": event.data,
+                        "created_at": event.created_at.isoformat(),
+                    }
+                    yield (
+                        "event: deployment\n"
+                        f"data: {json.dumps(payload)}\n\n"
+                    )
+                status = current.status
+
+            if log_path.exists():
+                with log_path.open("rb") as handle:
+                    handle.seek(log_offset)
+                    chunk = handle.read()
+                    log_offset = handle.tell()
+                if chunk:
+                    text = chunk.decode("utf-8", errors="replace")
+                    for line in text.splitlines():
+                        yield f"event: log\ndata: {json.dumps(line)}\n\n"
+
+            if status in terminal:
+                yield f"event: done\ndata: {json.dumps({'status': status})}\n\n"
+                return
+            yield "event: ping\ndata: {}\n\n"
+            await asyncio.sleep(1)
+
+        yield "event: timeout\ndata: {}\n\n"
+
+    return StreamingResponse(
+        generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/{deployment_id}", response_model=DeploymentOut)

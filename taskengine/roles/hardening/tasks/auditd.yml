@@ -1,0 +1,30 @@
+---
+- name: Ensure auditd is installed
+  ansible.builtin.package:
+    name: "{{ 'audit' if ansible_os_family == 'RedHat' else 'auditd' }}"
+    state: present
+  when: not ansible_check_mode
+
+- name: Ensure the audit rules directory exists
+  ansible.builtin.file:
+    path: "{{ hardening_audit_rules_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Deploy the LinSec360 audit rules
+  ansible.builtin.copy:
+    src: "{{ hardening_audit_rules_source }}"
+    dest: "{{ hardening_audit_rules_path }}"
+    owner: root
+    group: root
+    mode: "0640"
+  notify: Restart auditd
+
+- name: Enable and start auditd
+  ansible.builtin.service:
+    name: auditd
+    state: started
+    enabled: true
+  when: not ansible_check_mode

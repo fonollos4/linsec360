@@ -1,0 +1,169 @@
+# LinSec360 hardening baseline.
+#
+# The Ansible hardening role applies these controls; the same file is loaded by
+# backend/services/hardening_service.py so the UI and the automation always
+# agree on the expected value. Keep control identifiers stable: they are the
+# join key for drift history.
+version: 1
+name: linsec360-baseline
+description: >-
+  Minimal, auditable Linux hardening baseline covering SSH, kernel/sysctl,
+  auditd, PAM/login, services and SELinux.
+
+controls:
+  - id: ssh.permit_root_login
+    category: ssh
+    title: Disable direct root SSH login
+    expected: "no"
+    severity: high
+    check: sshd_effective
+    remediation: Set PermitRootLogin no in /etc/ssh/sshd_config.d/99-linsec.conf
+
+  - id: ssh.password_authentication
+    category: ssh
+    title: Disable SSH password authentication
+    expected: "no"
+    severity: high
+    check: sshd_effective
+    remediation: Set PasswordAuthentication no and provision keys.
+
+  - id: ssh.max_auth_tries
+    category: ssh
+    title: Limit SSH authentication attempts
+    expected: "4"
+    severity: medium
+    check: sshd_effective
+    remediation: Set MaxAuthTries 4.
+
+  - id: ssh.client_alive_interval
+    category: ssh
+    title: Enforce SSH idle timeout
+    expected: "300"
+    severity: medium
+    check: sshd_effective
+    remediation: Set ClientAliveInterval 300 and ClientAliveCountMax 2.
+
+  - id: kernel.aslr
+    category: kernel
+    title: Enable full address-space layout randomisation
+    expected: "2"
+    severity: high
+    check: sysctl
+    key: kernel.randomize_va_space
+    remediation: Set kernel.randomize_va_space=2.
+
+  - id: kernel.syn_cookies
+    category: kernel
+    title: Enable TCP SYN cookies
+    expected: "1"
+    severity: medium
+    check: sysctl
+    key: net.ipv4.tcp_syncookies
+    remediation: Set net.ipv4.tcp_syncookies=1.
+
+  - id: kernel.ip_forward
+    category: kernel
+    title: Disable IPv4 forwarding unless the host is a router
+    expected: "0"
+    severity: medium
+    check: sysctl
+    key: net.ipv4.ip_forward
+    remediation: Set net.ipv4.ip_forward=0.
+
+  - id: kernel.accept_redirects
+    category: kernel
+    title: Do not accept ICMP redirects
+    expected: "0"
+    severity: medium
+    check: sysctl
+    key: net.ipv4.conf.all.accept_redirects
+    remediation: Set net.ipv4.conf.all.accept_redirects=0.
+
+  - id: auditd.enabled
+    category: auditd
+    title: auditd is running and enabled at boot
+    expected: active
+    severity: high
+    check: service
+    service: auditd
+    remediation: systemctl enable --now auditd
+
+  - id: auditd.immutable
+    category: auditd
+    title: Audit rules are immutable
+    expected: "2"
+    severity: high
+    check: auditctl
+    key: enabled
+    remediation: Set -e 2 as the last rule in /etc/audit/rules.d/99-linsec.rules.
+
+  - id: auditd.identity_rules
+    category: auditd
+    title: Identity and privilege changes are audited
+    expected: present
+    severity: high
+    check: audit_rule
+    key: linsec_identity
+    remediation: Deploy config/selinux/audit.rules.
+
+  - id: pam.pwquality
+    category: pam
+    title: Password quality policy is deployed
+    expected: present
+    severity: medium
+    check: file_exists
+    path: /etc/security/pwquality.conf
+    remediation: Deploy /etc/security/pwquality.conf with minlen=14.
+
+  - id: pam.faillock
+    category: pam
+    title: Account lockout policy is deployed
+    expected: present
+    severity: medium
+    check: file_exists
+    path: /etc/security/faillock.conf
+    remediation: Deploy /etc/security/faillock.conf with deny=5 unlock_time=900.
+
+  - id: services.telnet_disabled
+    category: services
+    title: Telnet is not installed
+    expected: absent
+    severity: high
+    check: package
+    package: telnetd
+    remediation: Remove telnetd/telnet-server.
+
+  - id: services.rsh_disabled
+    category: services
+    title: Legacy rsh is not installed
+    expected: absent
+    severity: high
+    check: package
+    package: rsh-server
+    remediation: Remove rsh-server.
+
+  - id: selinux.enforcing
+    category: selinux
+    title: SELinux is enforcing
+    expected: Enforcing
+    severity: critical
+    check: getenforce
+    remediation: Set SELinux to enforcing in /etc/selinux/config and reboot.
+
+  - id: selinux.no_unconfined_daemons
+    category: selinux
+    title: Unconfined daemons are disabled
+    expected: "off"
+    severity: high
+    check: selinux_boolean
+    boolean: unconfined_daemons
+    remediation: setsebool -P unconfined_daemons off
+
+  - id: selinux.no_unconfined_service_units
+    category: selinux
+    title: Unconfined service units are disabled
+    expected: "off"
+    severity: high
+    check: selinux_boolean
+    boolean: unconfined_service_units
+    remediation: setsebool -P unconfined_service_units off

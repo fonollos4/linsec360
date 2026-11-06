@@ -1,0 +1,55 @@
+---
+- name: Check whether SELinux tooling is available
+  ansible.builtin.command: getenforce
+  register: hardening_getenforce_check
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Install SELinux policy tooling
+  ansible.builtin.package:
+    name: "{{ hardening_selinux_packages }}"
+    state: present
+  vars:
+    hardening_selinux_packages: >-
+      {{ ['policycoreutils-python-utils', 'selinux-policy-targeted']
+         if ansible_os_family == 'RedHat'
+         else ['policycoreutils', 'selinux-utils'] }}
+  when:
+    - hardening_getenforce_check.rc == 0
+    - not ansible_check_mode
+  failed_when: false
+
+- name: Deploy the SELinux configuration baseline
+  ansible.builtin.copy:
+    src: "{{ linsec_config_dir }}/selinux/selinux.conf"
+    dest: "{{ hardening_selinux_config_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: hardening_getenforce_check.rc == 0
+
+- name: Enforce the configured SELinux mode
+  ansible.builtin.lineinfile:
+    path: "{{ hardening_selinux_config_path }}"
+    regexp: "^SELINUX="
+    line: "SELINUX={{ hardening_selinux_mode }}"
+  when: hardening_getenforce_check.rc == 0
+
+- name: Enforce the configured SELinux policy type
+  ansible.builtin.lineinfile:
+    path: "{{ hardening_selinux_config_path }}"
+    regexp: "^SELINUXTYPE="
+    line: "SELINUXTYPE={{ hardening_selinux_policy }}"
+  when: hardening_getenforce_check.rc == 0
+
+- name: Apply SELinux booleans
+  ansible.builtin.command: >-
+    setsebool -P {{ item.key }}
+    {{ 'on' if item.value else 'off' }}
+  loop: "{{ hardening_selinux_booleans | dict2items }}"
+  changed_when: false
+  when:
+    - hardening_getenforce_check.rc == 0
+    - not ansible_check_mode
+  failed_when: false

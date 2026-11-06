@@ -223,6 +223,259 @@ class KpiOverview(BaseModel):
     deployment_success_rate: KpiItem
     open_vulnerabilities: KpiItem
     compliance_score: KpiItem
+    agent_coverage: KpiItem
+    disconnected_agents: KpiItem
+    open_critical_vulnerabilities: KpiItem
+    open_high_vulnerabilities: KpiItem
+    patch_coverage: KpiItem
+    reboot_required: KpiItem
+    kernel_exposure_days: KpiItem
+    hardening_drift: KpiItem
+    selinux_non_compliant: KpiItem
+    alerts_by_severity: dict[str, int] | None = None
+
+
+class KpiSnapshotOut(ORMModel):
+    id: int
+    metric: str
+    scope_type: str
+    scope_id: str | None = None
+    value: float | None = None
+    status: str
+    source: str
+    captured_at: datetime
+
+
+class ApiTokenCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    expires_in_days: int | None = Field(default=None, ge=1, le=3650)
+
+
+class ApiTokenOut(ORMModel):
+    id: int
+    name: str
+    role: str
+    expires_at: datetime | None = None
+    revoked_at: datetime | None = None
+    last_used_at: datetime | None = None
+    created_at: datetime
+
+
+class ApiTokenCreated(ApiTokenOut):
+    token: str
+
+
+class AgentOut(BaseModel):
+    id: str
+    name: str
+    ip: str | None = None
+    status: str
+    os: str | None = None
+    version: str | None = None
+    last_keep_alive: datetime | None = None
+    host_id: int | None = None
+
+
+class AgentSummary(BaseModel):
+    total: int
+    active: int
+    disconnected: int
+    pending: int
+    never_connected: int
+    coverage: KpiItem
+
+
+class AlertOut(ORMModel):
+    id: int
+    alert_id: str
+    timestamp: datetime
+    rule_id: str | None = None
+    rule_level: int | None = None
+    severity: str
+    agent_id: str | None = None
+    agent_name: str | None = None
+    description: str | None = None
+    location: str | None = None
+    mitre: list = Field(default_factory=list)
+    acknowledged: bool
+    acknowledged_by: str | None = None
+    acknowledged_at: datetime | None = None
+
+
+class ComplianceScanCreate(BaseModel):
+    host_name: str = Field(min_length=1, max_length=64)
+    profile: str | None = Field(default=None, max_length=255)
+    content: str | None = None
+    artifact_path: str | None = None
+
+
+class ComplianceFindingOut(ORMModel):
+    id: int
+    rule_id: str
+    title: str | None = None
+    result: str
+    severity: str | None = None
+    description: str | None = None
+    remediation: str | None = None
+
+
+class ComplianceScanOut(ORMModel):
+    id: str
+    host_id: int | None = None
+    host_name: str
+    profile: str
+    status: str
+    score: float | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    artifact_path: str | None = None
+    error_message: str | None = None
+    created_at: datetime
+
+
+class ComplianceScanDetail(ComplianceScanOut):
+    findings: list[ComplianceFindingOut] = Field(default_factory=list)
+
+
+class PatchFindingOut(ORMModel):
+    id: int
+    host_id: int | None = None
+    host_name: str
+    package: str
+    current_version: str | None = None
+    fixed_version: str | None = None
+    cve: str
+    errata: str
+    severity: str
+    source: str
+    status: str
+    reboot_required: bool
+    detected_at: datetime
+    updated_at: datetime
+
+
+class LivepatchOut(ORMModel):
+    id: int
+    host_id: int | None = None
+    host_name: str
+    kernel: str
+    livepatch_state: str
+    patch_available: bool
+    exposure_days: int | None = None
+    last_checked: datetime
+
+
+class LivepatchIn(BaseModel):
+    host_name: str = Field(min_length=1, max_length=64)
+    kernel: str = Field(min_length=1, max_length=128)
+    livepatch_state: Literal["applied", "pending", "unavailable", "unknown"] = (
+        "unknown"
+    )
+    patch_available: bool = False
+    exposure_days: int | None = Field(default=None, ge=0)
+
+
+class HardeningCheckIn(BaseModel):
+    category: str = Field(min_length=1, max_length=64)
+    control: str = Field(min_length=1, max_length=128)
+    expected: str | None = None
+    actual: str | None = None
+    status: Literal["pass", "fail", "unknown", "not_applicable"] = "unknown"
+
+
+class HardeningResultIn(BaseModel):
+    host_name: str = Field(min_length=1, max_length=64)
+    checks: list[HardeningCheckIn] = Field(min_length=1)
+
+
+class HardeningCheckOut(ORMModel):
+    id: int
+    host_id: int | None = None
+    host_name: str
+    category: str
+    control: str
+    expected: str | None = None
+    actual: str | None = None
+    status: str
+    checked_at: datetime
+
+
+class OperationScheduleCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    operation: Literal["openscap", "patch", "uyuni_sync", "wazuh_sync"]
+    environment: str = Field(min_length=1, max_length=64)
+    playbook: str | None = Field(default=None, max_length=255)
+    profile: str | None = Field(default=None, max_length=255)
+    interval_minutes: int = Field(default=1440, ge=5, le=525600)
+    enabled: bool = True
+    hosts: list[str] = Field(default_factory=list)
+    config: dict = Field(default_factory=dict)
+
+
+class OperationScheduleOut(ORMModel):
+    id: int
+    name: str
+    operation: str
+    environment_name: str
+    playbook_name: str | None = None
+    profile: str | None = None
+    interval_minutes: int
+    enabled: bool
+    next_run_at: datetime | None = None
+    last_run_at: datetime | None = None
+    last_status: str | None = None
+    target_hosts: list = Field(default_factory=list)
+    config: dict = Field(default_factory=dict)
+
+
+class MaintenanceWindowCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    environment: str = Field(min_length=1, max_length=64)
+    starts_at: datetime
+    ends_at: datetime
+    enabled: bool = True
+    config: dict = Field(default_factory=dict)
+
+    @field_validator("ends_at")
+    @classmethod
+    def _end_after_start(cls, value: datetime) -> datetime:
+        return value
+
+
+class MaintenanceWindowOut(ORMModel):
+    id: int
+    name: str
+    environment_name: str
+    starts_at: datetime
+    ends_at: datetime
+    enabled: bool
+    config: dict = Field(default_factory=dict)
+
+
+class ActiveResponseRequest(BaseModel):
+    action: Literal["firewall-drop", "disable-account"]
+    confirm: Literal[True]
+
+
+class HostPosture(BaseModel):
+    host_id: int
+    host_name: str
+    compliance: ComplianceScanOut | None = None
+    hardening: list[HardeningCheckOut] = Field(default_factory=list)
+    patch_findings: list[PatchFindingOut] = Field(default_factory=list)
+    livepatch: LivepatchOut | None = None
+    agent: AgentOut | None = None
+
+
+class IntegrationState(BaseModel):
+    configured: bool
+    reachable: bool | None = None
+    detail: str | None = None
+
+
+class IntegrationStatus(BaseModel):
+    wazuh: IntegrationState
+    uyuni: IntegrationState
 
 
 class AuditOut(ORMModel):
