@@ -1,0 +1,16 @@
+---
+- name: Remove temporary files from Linux hosts
+  hosts: all
+  gather_facts: false
+  become: true
+
+  tasks:
+    - name: Remove files from temporary directories older than seven days
+      ansible.builtin.shell: find /tmp /var/tmp -type f -atime +7 -delete
+      changed_when: false
+
+    - name: Remove orphaned package manager caches
+      ansible.builtin.shell: |
+        if command -v apt-get >/dev/null; then apt-get clean; fi
+        if command -v dnf >/dev/null; then dnf clean all >/dev/null; fi
+      changed_when: false

@@ -1,0 +1,19 @@
+---
+- name: Collect Linux security audit information
+  hosts: all
+  gather_facts: true
+  become: true
+
+  tasks:
+    - name: Read system distribution information
+      ansible.builtin.command: uname -a
+      register: kernel_information
+      changed_when: false
+
+    - name: Display Linux system summary
+      ansible.builtin.debug:
+        msg:
+          host: "{{ inventory_hostname }}"
+          distribution: "{{ ansible_distribution }} {{ ansible_distribution_version }}"
+          kernel: "{{ kernel_information.stdout }}"
+          architecture: "{{ ansible_architecture }}"

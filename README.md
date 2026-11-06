@@ -1,3 +1,23 @@
+# LinSec360
+
+LinSec360 is a Linux security orchestration platform. The repository currently
+contains two stacks during a controlled transition:
+
+- **Legacy Wazuh/Flask stack** — `docker-compose.yml`, documented below.
+- **New FastAPI + PostgreSQL backend** — `backend/`, with auth/RBAC, DB-backed
+  playbooks, generated inventories, and a Redis/RQ deployment worker. See
+  [`docs/V2_BACKEND.md`](docs/V2_BACKEND.md) for setup and the `/api/v1`
+  contract. Start it with:
+
+  ```bash
+  docker compose -f docker-compose.v2.yml up --build
+  ```
+
+The legacy stack remains the default until the React UI reaches parity. Do not
+remove it yet.
+
+---
+
 # Deploy Wazuh Docker in single node configuration
 
 This deployment is defined in `docker-compose.yml` with one Wazuh manager,

@@ -1,0 +1,123 @@
+# New backend stack: FastAPI + PostgreSQL + Redis + RQ worker.
+#
+#   docker compose -f docker-compose.v2.yml up --build
+#
+# Required in .env:
+#   POSTGRES_PASSWORD
+#   LINSEC_SECRET_KEY              (openssl rand -hex 32)
+#   LINSEC_BOOTSTRAP_ADMIN_PASSWORD
+#
+# The legacy Wazuh/Flask stack remains in docker-compose.yml during the
+# transition. Do not publish both stacks on the same ports.
+
+x-backend-environment: &backend-environment
+  PYTHONPATH: /opt/linsec
+  LINSEC_ENVIRONMENT: ${LINSEC_ENVIRONMENT:-development}
+  LINSEC_SECRET_KEY: ${LINSEC_SECRET_KEY:?Set LINSEC_SECRET_KEY in .env}
+  LINSEC_COOKIE_SECURE: ${LINSEC_COOKIE_SECURE:-false}
+  LINSEC_DATABASE_URL: postgresql+psycopg://linsec:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/linsec
+  LINSEC_REDIS_URL: redis://redis:6379/0
+  LINSEC_BOOTSTRAP_ADMIN_USERNAME: ${LINSEC_BOOTSTRAP_ADMIN_USERNAME:-admin}
+  LINSEC_BOOTSTRAP_ADMIN_PASSWORD: ${LINSEC_BOOTSTRAP_ADMIN_PASSWORD:?Set LINSEC_BOOTSTRAP_ADMIN_PASSWORD in .env}
+  LINSEC_AUTO_CREATE_TABLES: "false"
+  LINSEC_LOG_DIR: /opt/linsec/logs
+  LINSEC_TASKENGINE_DIR: /opt/linsec/taskengine
+  LINSEC_PLAYBOOK_DIR: /opt/linsec/var/playbooks
+  LINSEC_INVENTORY_DIR: /opt/linsec/var/inventories
+  LINSEC_BUNDLED_PLAYBOOKS_DIR: /opt/linsec/taskengine/playbooks
+  LINSEC_CORS_ORIGINS: '["http://localhost:5173"]'
+
+x-backend-build: &backend-build
+  context: .
+  dockerfile: backend/Dockerfile
+  args:
+    LINSEC_UID: ${LINSEC_UID:-1000}
+    LINSEC_GID: ${LINSEC_GID:-1000}
+
+x-backend-volumes: &backend-volumes
+  - linsec_var:/opt/linsec/var
+  - linsec_logs:/opt/linsec/logs
+  - ./.ssh:/opt/linsec/.ssh:ro
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: linsec
+      POSTGRES_USER: linsec
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - linsec_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U linsec -d linsec"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - linsec_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: *backend-build
+    restart: unless-stopped
+    command:
+      - sh
+      - -c
+      - >-
+        alembic -c backend/alembic.ini upgrade head &&
+        exec uvicorn backend.main:app --host 0.0.0.0 --port 8000
+        --proxy-headers --forwarded-allow-ips='*'
+    environment: *backend-environment
+    volumes: *backend-volumes
+    ports:
+      - "${LINSEC_API_PORT:-8080}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3)"
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  worker:
+    build: *backend-build
+    restart: unless-stopped
+    command:
+      - rq
+      - worker
+      - deployments
+      - --url
+      - redis://redis:6379/0
+      - --path
+      - /opt/linsec
+    environment: *backend-environment
+    volumes: *backend-volumes
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  linsec_postgres:
+  linsec_redis:
+  linsec_var:
+  linsec_logs:

@@ -80,6 +80,7 @@ function setupForms() {
     document.getElementById('top-action').addEventListener('click', () => openHostModal());
     document.getElementById('add-host-view-btn').addEventListener('click', () => openHostModal());
     document.getElementById('add-playbook-btn').addEventListener('click', () => openPlaybookModal());
+    document.getElementById('library-search').addEventListener('input', renderPlaybooks);
     document.getElementById('refresh-deployments').addEventListener('click', loadDeployments);
 
     document.querySelectorAll('.modal-close').forEach(button => {
@@ -96,8 +97,8 @@ function renderStats(stats) {
     const cards = [
         ['Hôtes enregistrés', stats.host_count || 0, '⌂'],
         ['Hôtes sécurisés', stats.secured_count || 0, '✓'],
-        ['Vulnérabilités', stats.vulnerabilities_count || 0, '!'],
-        ['Déploiements actifs', state.deployments?.filter(job => job.status === 'running').length || 0, '▶'],
+        ['Vulnérabilités', stats.vulnerabilities_count ?? '—', '!'],
+        ['Déploiements actifs', state.deployments?.filter(job => ['running', 'queued'].includes(job.status)).length || 0, '▶'],
     ];
     document.getElementById('stats-grid').innerHTML = cards.map(([label, value, icon]) => `
         <article class="stat-card"><div class="stat-card-top"><span>${label}</span><span class="stat-mark">${icon}</span></div><strong>${value}</strong></article>
@@ -129,19 +130,46 @@ function renderHosts() {
     });
 }
 
+function getPlaybookDescription(filename) {
+    const descriptions = {
+        'connectivity.yml': 'Teste la connexion SSH et Ansible de chaque hôte.',
+        'system-audit.yml': 'Collecte la distribution, le noyau et l architecture des serveurs.',
+        'system-update.yml': 'Installe les mises à jour Debian, Ubuntu, RHEL et dérivés.',
+        'disk-cleanup.yml': 'Supprime les anciens fichiers temporaires et nettoie les caches.',
+    };
+    return descriptions[filename] || 'Playbook Ansible personnalisable et prêt à être lancé.';
+}
+
+function launchPlaybook(filename) {
+    switchView('overview');
+    const select = document.getElementById('playbook-select');
+    select.value = filename;
+    document.getElementById('deploy-form').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
 function renderPlaybooks() {
     const grid = document.getElementById('playbooks-grid');
+    const search = document.getElementById('library-search')?.value.trim().toLowerCase() || '';
+    const playbooks = state.playbooks.filter(filename => {
+        return !search || filename.toLowerCase().includes(search) || getPlaybookDescription(filename).toLowerCase().includes(search);
+    });
     if (!state.playbooks.length) {
         grid.innerHTML = '<article class="panel playbook-card"><p class="empty-row">Aucun playbook disponible</p></article>';
         return;
     }
-    grid.innerHTML = state.playbooks.map(filename => `
+    if (!playbooks.length) {
+        grid.innerHTML = '<article class="panel playbook-card"><p class="empty-row">Aucun playbook ne correspond à cette recherche</p></article>';
+        return;
+    }
+    grid.innerHTML = playbooks.map(filename => `
         <article class="playbook-card">
             <div class="playbook-card-head"><span class="file-icon">{ }</span><h3>${escapeHtml(filename)}</h3></div>
-            <p>Playbook Ansible YAML</p>
-            <div class="card-actions"><button data-edit-playbook="${escapeHtml(filename)}">Modifier</button><button data-delete-playbook="${escapeHtml(filename)}">Supprimer</button></div>
+            <span class="library-badge">Bibliothèque</span>
+            <p>${getPlaybookDescription(filename)}</p>
+            <div class="card-actions"><button data-launch-playbook="${escapeHtml(filename)}">Lancer</button><button data-edit-playbook="${escapeHtml(filename)}">Modifier</button><button data-delete-playbook="${escapeHtml(filename)}">Supprimer</button></div>
         </article>
     `).join('');
+    grid.querySelectorAll('[data-launch-playbook]').forEach(button => button.addEventListener('click', () => launchPlaybook(button.dataset.launchPlaybook)));
     grid.querySelectorAll('[data-edit-playbook]').forEach(button => button.addEventListener('click', () => openPlaybookModal(button.dataset.editPlaybook)));
     grid.querySelectorAll('[data-delete-playbook]').forEach(button => button.addEventListener('click', () => deletePlaybook(button.dataset.deletePlaybook)));
 }

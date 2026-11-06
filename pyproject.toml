@@ -1,0 +1,23 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "UP",
+    "B",
+    "SIM",
+    "RUF",
+    "TRY",
+]
+# FastAPI uses function calls in default arguments for dependency injection.
+# Exception messages are user-facing API errors, so TRY003/TRY301 add noise.
+# E501 is handled by the formatter for generated migrations.
+ignore = ["B008", "E501", "TRY003", "TRY004", "TRY301"]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+pythonpath = ["."]

@@ -93,6 +93,24 @@ def test_worker_persists_job_result_and_host_status(monkeypatch, tmp_path):
     assert Path(job["log_path"]).stat().st_mode & 0o777 == 0o600
 
 
+def test_ansible_command_limits_execution_to_target_hosts(monkeypatch, tmp_path):
+    monkeypatch.setattr(Config, "PLAYBOOKS_DIR", str(tmp_path))
+    monkeypatch.setattr(Config, "INVENTORY_DIR", str(tmp_path))
+    job = {
+        "environment": "production",
+        "playbook": "system-update.yml",
+        "target_hosts": ["web-01", "db-01"],
+    }
+
+    command = DeploymentService._build_ansible_command(
+        job,
+        str(tmp_path / "env.yml"),
+        str(tmp_path / "hosts.yml"),
+    )
+
+    assert command[command.index("--limit") + 1] == "web-01,db-01"
+
+
 def test_selected_deployment_hosts_must_belong_to_environment(monkeypatch):
     monkeypatch.setattr(
         "services.deployment_service.HostRepository.get_by_environment",

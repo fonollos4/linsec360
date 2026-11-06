@@ -10,6 +10,9 @@ services:
     volumes:
       - ./logs/:/opt/linsec/logs/:rw
       - ./.ssh:/opt/linsec/.ssh:rw
+      - ./app/instance:/opt/linsec/app/instance:rw
+      - ./taskengine/inventories:/opt/linsec/taskengine/inventories:rw
+      - ./taskengine/playbooks:/opt/linsec/taskengine/playbooks:rw
     ports:
       - "8000:5000"
     healthcheck:

@@ -1,0 +1,75 @@
+import pytest
+import yaml
+
+from backend import models
+from backend.config import get_settings
+from backend.db import session_scope
+from backend.errors import NotFoundError
+from backend.services.inventory_service import build_inventory, write_inventory
+
+
+def _seed() -> None:
+    with session_scope() as db:
+        environment = models.Environment(name="production")
+        web = models.HostGroup(name="web")
+        database = models.HostGroup(name="database")
+        db.add_all([environment, web, database])
+        db.flush()
+        db.add(
+            models.Host(
+                name="web01",
+                ip="10.0.0.10",
+                environment=environment,
+                security_level="high",
+                groups=[web],
+            )
+        )
+        db.add(
+            models.Host(
+                name="db01",
+                ip="10.0.0.20",
+                environment=environment,
+                security_level="critical",
+                groups=[database],
+            )
+        )
+        db.add(
+            models.Host(
+                name="lonely",
+                ip="10.0.0.30",
+                environment=environment,
+                security_level="low",
+            )
+        )
+
+
+def test_build_inventory_groups_hosts(client):
+    _seed()
+    with session_scope() as db:
+        hosts = db.query(models.Host).order_by(models.Host.name).all()
+        inventory = build_inventory(hosts)
+
+    children = inventory["all"]["children"]
+    assert "web" in children
+    assert children["web"]["hosts"]["web01"]["ansible_host"] == "10.0.0.10"
+    assert children["web"]["hosts"]["web01"]["linsec_security_level"] == "high"
+    assert "db01" in children["database"]["hosts"]
+    assert "lonely" in children["ungrouped"]["hosts"]
+
+
+def test_write_inventory_creates_private_yaml(client):
+    _seed()
+    with session_scope() as db:
+        path = write_inventory(db, "production")
+
+    assert path.exists()
+    assert path.stat().st_mode & 0o777 == 0o600
+    content = yaml.safe_load(path.read_text())
+    assert "production" not in content
+    assert "web01" in content["all"]["children"]["web"]["hosts"]
+    assert path.parent == get_settings().inventories_dir / "production"
+
+
+def test_write_inventory_unknown_environment(client):
+    with session_scope() as db, pytest.raises(NotFoundError):
+        write_inventory(db, "missing")

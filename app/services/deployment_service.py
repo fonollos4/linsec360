@@ -114,6 +114,23 @@ class DeploymentService:
         return job
 
     @staticmethod
+    def _build_ansible_command(job, env_path, hosts_path):
+        """Build the ansible command, restricted to the requested target hosts."""
+        command = [
+            "ansible-playbook",
+            "-i",
+            Config.get_inventory_path(job["environment"]),
+            Config.get_playbook_path(job["playbook"]),
+            "--extra-vars",
+            f"@{env_path}",
+            "--extra-vars",
+            f"@{hosts_path}",
+        ]
+        if job["target_hosts"]:
+            command.extend(["--limit", ",".join(job["target_hosts"])])
+        return command
+
+    @staticmethod
     def _run_ansible_deployment(app, job):
         with app.app_context():
             started_at = datetime.now(timezone.utc).isoformat()
@@ -146,16 +163,11 @@ class DeploymentService:
                 )
                 temporary_paths.append(hosts_path)
 
-                command = [
-                    "ansible-playbook",
-                    "-i",
-                    Config.get_inventory_path(job["environment"]),
-                    Config.get_playbook_path(job["playbook"]),
-                    "--extra-vars",
-                    f"@{env_path}",
-                    "--extra-vars",
-                    f"@{hosts_path}",
-                ]
+                command = DeploymentService._build_ansible_command(
+                    job,
+                    env_path,
+                    hosts_path,
+                )
 
                 descriptor = os.open(
                     job["log_path"],

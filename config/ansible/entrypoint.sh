@@ -15,6 +15,13 @@ if [ ! -f "/opt/linsec/taskengine/.vault_pass" ]; then
   chmod 600 /opt/linsec/taskengine/.vault_pass
 fi
 
+# Initialize the SQLite database on first boot. The instance directory is
+# volume-mounted, so the database created at image build time may be hidden.
+if [ ! -f "/opt/linsec/app/instance/linsec.db" ]; then
+  echo "Initializing LinSec360 database..."
+  (cd /opt/linsec/app && flask --app 'app:create_app()' init-db)
+fi
+
 # Start the Flask app with Gunicorn
 exec gunicorn "app:create_app()" \
   --bind 0.0.0.0:5000 \

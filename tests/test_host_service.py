@@ -80,5 +80,7 @@ def test_stats_service_returns_latest_stats(monkeypatch):
     assert StatsService.get_current_stats() == {
         "host_count": 2,
         "secured_count": 1,
-        "vulnerabilities_count": 1,
+        "vulnerabilities_count": None,
+        "vulnerabilities_status": "not_configured",
+        "vulnerabilities_source": "wazuh",
     }

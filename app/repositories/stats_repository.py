@@ -19,8 +19,10 @@ class StatsRepository:
         secured_hosts = db.execute(
             "SELECT COUNT(*) FROM hosts WHERE status = 'secured'"
         ).fetchone()[0]
-        unsecured_hosts = total_hosts - secured_hosts
-        vulnerabilities = max(1, unsecured_hosts // 3) if unsecured_hosts else 0
+        # Legacy column is NOT NULL. It is retained as a placeholder but is
+        # never exposed: the API reports vulnerability data as "not configured"
+        # until a real Wazuh source is connected.
+        vulnerabilities = 0
         db.execute(
             "INSERT INTO stats "
             "(host_count, secured_count, vulnerabilities_count) VALUES (?, ?, ?)",

@@ -26,6 +26,7 @@ molecule/**/es_certs/
 molecule/**/opendistro/
 .ssh/
 logs/
+var/
 app/instance/*.db
 app/instance/*.sqlite
 app/instance/*.sqlite3

@@ -1,0 +1,8 @@
+---
+- name: Verify connectivity with LinSec360 managed hosts
+  hosts: all
+  gather_facts: false
+
+  tasks:
+    - name: Test Ansible connectivity
+      ansible.builtin.ping:

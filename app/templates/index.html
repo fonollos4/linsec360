@@ -80,7 +80,10 @@
         </section>
 
         <section class="view" data-view-panel="playbooks">
-            <div class="toolbar"><div><p class="eyebrow">Automatisation Ansible</p><h2>Bibliothèque de playbooks</h2></div><button class="primary-button" id="add-playbook-btn">+ Nouveau playbook</button></div>
+            <div class="toolbar">
+                <div><p class="eyebrow">Automatisation Ansible</p><h2>Bibliothèque de playbooks</h2></div>
+                <div class="toolbar-actions"><input class="library-search" id="library-search" type="search" placeholder="Rechercher un playbook..." aria-label="Rechercher un playbook"><button class="primary-button" id="add-playbook-btn">+ Nouveau playbook</button></div>
+            </div>
             <div class="card-grid" id="playbooks-grid"></div>
         </section>
 
@@ -97,7 +100,7 @@
         <label>Nom d'hôte<input name="hostname" required placeholder="srv-web-01"></label>
         <label>Adresse IP<input name="ip" required placeholder="192.168.1.10"></label>
         <label>Environnement<select name="environment"><option value="production">Production</option><option value="staging">Staging</option><option value="development">Développement</option></select></label>
-        <label>Niveau de sécurité<select name="security-level"><option value="standard">Standard</option><option value="high">Élevé</option><option value="critical">Critique</option></select></label>
+        <label>Niveau de sécurité<select name="security-level"><option value="low">Faible</option><option value="medium" selected>Moyen</option><option value="high">Élevé</option><option value="critical">Critique</option></select></label>
         <label class="span-2">Groupes<input name="groups" placeholder="web,linux"></label>
     </div>
     <div class="modal-actions"><button class="secondary-button modal-close" type="button">Annuler</button><button class="primary-button" type="submit">Ajouter l'hôte</button></div>

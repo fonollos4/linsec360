@@ -83,7 +83,7 @@ export function renderStats(stats) {
     document.getElementById('host-count').textContent = stats.host_count || 0;
     document.getElementById('secured-count').textContent = stats.secured_count || 0;
     document.getElementById('vulnerabilities-count').textContent =
-        stats.vulnerabilities_count || 0;
+        stats.vulnerabilities_count ?? '—';
 
     const lastUpdate = document.getElementById('last-update');
     lastUpdate.textContent = stats.timestamp
