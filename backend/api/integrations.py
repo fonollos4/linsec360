@@ -69,13 +69,19 @@ def test_uyuni(
     if not settings.uyuni_configured:
         return IntegrationState(configured=False, reachable=False)
     try:
-        uyuni_service.get_client().test_connection()
-    except Exception:
+        systems = uyuni_service.get_client().test_connection()
+    except (IntegrationNotConfigured, IntegrationUnavailable) as exc:
+        logger.warning("Uyuni XML-RPC connectivity test failed: %s", exc)
         return IntegrationState(
-            configured=True, reachable=False,
-            detail="Le test de connexion Uyuni a échoué.",
+            configured=True,
+            reachable=False,
+            detail=str(exc)[:300],
         )
-    return IntegrationState(configured=True, reachable=True)
+    return IntegrationState(
+        configured=True,
+        reachable=True,
+        detail=f"XML-RPC accessible ; {systems} système(s) Uyuni récupéré(s).",
+    )
 
 
 @router.post("/ansible/test", response_model=IntegrationState)

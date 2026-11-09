@@ -7,6 +7,7 @@ import logging
 import xmlrpc.client
 from datetime import UTC, datetime
 from typing import Any
+from xml.parsers.expat import ExpatError
 
 import httpx
 from sqlalchemy.orm import Session
@@ -124,7 +125,7 @@ class UyuniClient:
             raise IntegrationUnavailable(
                 f"Uyuni XML-RPC error {exc.faultCode}: {exc.faultString}"
             ) from exc
-        except (httpx.HTTPError, xmlrpc.client.ResponseError, xmlrpc.client.ExpatError) as exc:
+        except (httpx.HTTPError, xmlrpc.client.ResponseError, ExpatError) as exc:
             raise IntegrationUnavailable(f"Uyuni API request failed: {exc}") from exc
         else:
             return result
@@ -161,8 +162,9 @@ class UyuniClient:
             return []
         return [normalize_errata(item) for item in result]
 
-    def test_connection(self) -> None:
-        self.list_systems()
+    def test_connection(self) -> int:
+        """Log in to Uyuni XML-RPC and confirm its systems endpoint is usable."""
+        return len(self.list_systems())
 
     def close(self) -> None:
         if self._http is not None and hasattr(self, "_session"):

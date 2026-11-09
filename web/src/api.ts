@@ -101,6 +101,10 @@ export interface WazuhSyncResult {
   alerts: { fetched: number; created: number; updated: number }
   vulnerabilities: { hosts: number; created: number; updated: number }
 }
+export interface UyuniSyncResult {
+  systems: { systems: number; matched_hosts: number; created: number; updated: number }
+  errata: { systems: number; created: number; updated: number }
+}
 export interface Alert {
   id: number
   alert_id: string
@@ -266,7 +270,7 @@ export const api = {
   patchFindings: () => request<PatchFinding[]>('/patching/findings'),
   patchSummary: () => request<Record<string, unknown>>('/patching/summary'),
   syncWazuhPatches: () => mutating<Record<string, unknown>>('/patching/wazuh/sync', 'POST'),
-  syncUyuni: () => mutating<Record<string, unknown>>('/patching/uyuni/sync', 'POST'),
+  syncUyuni: () => mutating<UyuniSyncResult>('/patching/uyuni/sync', 'POST'),
   uyuniSystems: () => request<UyuniSystem[]>('/patching/uyuni'),
   resolvePatch: (id: number) => mutating<PatchFinding>(`/patching/findings/${id}/resolve`, 'POST'),
   alerts: () => request<Alert[]>('/alerts'),

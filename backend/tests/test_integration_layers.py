@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from backend import models
@@ -599,6 +600,86 @@ def test_wazuh_connection_test_exposes_safe_failure_detail(
     assert response.status_code == 200
     assert response.json()["reachable"] is False
     assert response.json()["detail"] == "certificate verification failed"
+
+
+def test_uyuni_connection_test_reports_system_count(
+    client: TestClient, csrf_headers, monkeypatch
+):
+    monkeypatch.setattr(
+        integrations_api,
+        "get_settings",
+        lambda: SimpleNamespace(uyuni_configured=True),
+    )
+
+    class FakeUyuniClient:
+        def test_connection(self):
+            return 2
+
+    monkeypatch.setattr(
+        integrations_api.uyuni_service,
+        "get_client",
+        lambda: FakeUyuniClient(),
+    )
+
+    response = client.post(
+        "/api/v1/integrations/uyuni/test",
+        headers=csrf_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["reachable"] is True
+    assert response.json()["detail"] == "XML-RPC accessible ; 2 système(s) Uyuni récupéré(s)."
+
+
+def test_uyuni_connection_test_exposes_safe_failure_detail(
+    client: TestClient, csrf_headers, monkeypatch
+):
+    monkeypatch.setattr(
+        integrations_api,
+        "get_settings",
+        lambda: SimpleNamespace(uyuni_configured=True),
+    )
+
+    class FakeUyuniClient:
+        def test_connection(self):
+            raise IntegrationUnavailable("Uyuni XML-RPC login failed")
+
+    monkeypatch.setattr(
+        integrations_api.uyuni_service,
+        "get_client",
+        lambda: FakeUyuniClient(),
+    )
+
+    response = client.post(
+        "/api/v1/integrations/uyuni/test",
+        headers=csrf_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["reachable"] is False
+    assert response.json()["detail"] == "Uyuni XML-RPC login failed"
+
+
+def test_uyuni_client_reports_invalid_xml_as_integration_error():
+    settings = SimpleNamespace(
+        uyuni_configured=True,
+        uyuni_api_url="http://uyuni/rpc/api",
+        uyuni_username="admin",
+        uyuni_password="secret",
+        uyuni_verify_tls=True,
+        uyuni_timeout_seconds=10,
+    )
+    client = uyuni_service.UyuniClient(settings=settings)
+    client._session = "session-123"
+    client._http = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, content=b"not XML")
+        )
+    )
+
+    with pytest.raises(IntegrationUnavailable, match="Uyuni API request failed"):
+        client._call("system.listSystems")
+    client.close()
 
 
 def test_ansible_test_checks_only_bounded_version_command(

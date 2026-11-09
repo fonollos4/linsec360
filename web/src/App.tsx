@@ -1340,11 +1340,13 @@ function Patching() {
         actions={(
           <>
             <button className="secondary" disabled={syncWazuh.isPending} onClick={() => syncWazuh.mutate()}><RefreshCw /> Synchroniser Wazuh</button>
-            <button className="secondary" disabled={syncUyuni.isPending} onClick={() => syncUyuni.mutate()}><RefreshCw /> Synchroniser Uyuni</button>
+            <button className="secondary" disabled={syncUyuni.isPending} onClick={() => syncUyuni.mutate()}><RefreshCw />{syncUyuni.isPending ? 'Récupération…' : 'Récupérer depuis Uyuni'}</button>
           </>
         )}
       />
-      {(syncWazuh.isError || syncUyuni.isError) && <div className="alert error">Une intégration n’est pas configurée ou inaccessible.</div>}
+      {syncWazuh.isError && <div className="alert error">{syncWazuh.error instanceof Error ? syncWazuh.error.message : 'Synchronisation Wazuh impossible.'}</div>}
+      {syncUyuni.isError && <div className="alert error">{syncUyuni.error instanceof Error ? syncUyuni.error.message : 'Synchronisation Uyuni impossible.'}</div>}
+      {syncUyuni.data && <div className="alert success">Uyuni : {syncUyuni.data.systems.systems} système(s) récupéré(s), {syncUyuni.data.systems.matched_hosts} lié(s) à l’inventaire ; {syncUyuni.data.errata.created} errata ajoutés, {syncUyuni.data.errata.updated} actualisés.</div>}
       <section className="metrics-grid">
         <StatCard label="Correctifs ouverts" item={{ value: open.length, status: 'ok' }} icon={Boxes} tone="danger" hint="findings" />
         <StatCard label="Critiques" item={{ value: critical, status: 'ok' }} icon={ShieldAlert} tone="danger" />
@@ -1666,7 +1668,7 @@ function Settings() {
               {state.detail && <p className="integrations-detail">{state.detail}</p>}
               {mutation.isError && <div className="alert error" style={{ marginTop: 12 }}>{mutation.error instanceof Error ? mutation.error.message : 'Test impossible.'}</div>}
               <button className="secondary btn sm" style={{ marginTop: 16 }} disabled={mutation.isPending || (key !== 'ansible' && !state.configured)} onClick={() => mutation.mutate()}>
-                {mutation.isPending ? 'Test…' : key === 'ansible' ? 'Vérifier Ansible' : key === 'wazuh' ? 'Tester l’API Wazuh' : 'Tester la connexion'}
+                {mutation.isPending ? 'Test…' : key === 'ansible' ? 'Vérifier Ansible' : key === 'wazuh' ? 'Tester l’API Wazuh' : 'Tester XML-RPC Uyuni'}
               </button>
             </div>
           </article>
