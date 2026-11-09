@@ -55,6 +55,12 @@ def serialize(host: models.Host) -> HostOut:
         os=host.os,
         last_seen=host.last_seen,
         added_date=host.added_date,
+        ansible_user=host.ansible_user,
+        ansible_port=host.ansible_port,
+        ssh_status=host.ssh_status,
+        ssh_fingerprint=host.ssh_fingerprint,
+        ssh_error=host.ssh_error,
+        last_ssh_test_at=host.last_ssh_test_at,
     )
 
 
@@ -121,6 +127,8 @@ def create_host(
         security_level=payload.security_level,
         status=payload.status,
         groups=_get_or_create_groups(db, payload.groups),
+        ansible_user=payload.ansible_user,
+        ansible_port=payload.ansible_port,
     )
     db.add(host)
     audit_service.record(
@@ -159,6 +167,10 @@ def update_host(
         host.security_level = payload.security_level
     if payload.status is not None:
         host.status = payload.status
+    if payload.ansible_user is not None:
+        host.ansible_user = payload.ansible_user
+    if payload.ansible_port is not None:
+        host.ansible_port = payload.ansible_port
     if payload.groups is not None:
         host.groups = _get_or_create_groups(db, payload.groups)
 

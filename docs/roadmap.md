@@ -22,6 +22,27 @@ Scope rule: Uyuni is the only new external component. KernelCare is removed
 because it is commercial. OpenUBA is not deployed; Wazuh Dashboard/Indexer is
 the supervision/SIEM and behavioral-analytics layer.
 
+## Next functional product implementation
+
+The remaining product gap is not infrastructure coverage but operator workflow.
+Backend services exist for hosts, deployments, Wazuh, OpenSCAP, Uyuni,
+live-patching, alerts and audit, but each area must be exposed as a complete
+actionable web workflow.
+
+- [ ] Complete host CRUD and unified per-host posture.
+- [ ] Complete playbook selection, check mode, approval and live deployment detail.
+- [ ] Add Wazuh synchronization, incident detail and operator-confirmed response.
+- [ ] Complete OpenSCAP launch, profile selection, comparison and remediation.
+- [ ] Validate Uyuni protocol/API and add real system/errata synchronization.
+- [ ] Complete Uyuni patch preview, approval, execution and reboot verification.
+- [ ] Correlate Wazuh alerts, CVEs, OpenSCAP drift and patch findings.
+- [ ] Add scheduling and maintenance-window enforcement in operator workflows.
+- [ ] Add immutable workflow evidence for detection, action and verification.
+- [ ] Add an end-to-end test for alert → proposal → approval → Ansible → verification.
+
+The target workflow and integration decisions are documented in
+[`product-security-workflow.md`](architecture/product-security-workflow.md).
+
 ## Implemented backend foundation (2026-11-06)
 
 - [x] FastAPI + Pydantic v2 app factory in `backend/`.

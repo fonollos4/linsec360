@@ -59,7 +59,6 @@ def logout(
     request: Request,
     response: Response,
     db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
 ) -> Message:
     jti = current_session_id(request)
     if jti:

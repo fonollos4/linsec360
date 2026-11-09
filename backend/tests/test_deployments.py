@@ -47,6 +47,30 @@ def test_create_and_list_deployment(client: TestClient, csrf_headers, queue):
     assert response.text == ""
 
 
+def test_deployment_check_mode_and_extra_vars(client: TestClient, csrf_headers, queue):
+    headers = csrf_headers()
+    create_host(client, headers)
+    create_playbook(client, headers)
+    response = client.post(
+        "/api/v1/deployments",
+        headers=headers,
+        json={
+            "environment": "production",
+            "playbook": "custom.yml",
+            "hosts": ["web01"],
+            "check_mode": True,
+            "extra_vars": {"openscap_profile": "cis_ubuntu.xml"},
+        },
+    )
+    assert response.status_code == 202, response.text
+    deployment_id = response.json()["id"]
+    with session_scope() as db:
+        deployment = db.get(models.Deployment, deployment_id)
+        assert deployment is not None
+        assert deployment.extra_vars["linsec_check_mode"] == "true"
+        assert deployment.extra_vars["openscap_profile"] == "cis_ubuntu.xml"
+
+
 def test_deployment_with_unknown_host_is_rejected(client: TestClient, csrf_headers):
     headers = csrf_headers()
     create_host(client, headers)

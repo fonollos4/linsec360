@@ -133,9 +133,10 @@ def create_app() -> FastAPI:
         mutating = request.method in {"POST", "PUT", "PATCH", "DELETE"}
         is_api = request.url.path.startswith(settings.api_prefix)
         is_login = request.url.path == f"{settings.api_prefix}/auth/login"
+        is_logout = request.url.path == f"{settings.api_prefix}/auth/logout"
         session_cookie = request.cookies.get(settings.cookie_name)
 
-        if mutating and is_api and not is_login and session_cookie:
+        if mutating and is_api and not is_login and not is_logout and session_cookie:
             csrf_cookie = request.cookies.get(settings.csrf_cookie_name)
             csrf_header = request.headers.get("X-CSRF-Token")
             if (

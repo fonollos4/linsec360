@@ -81,6 +81,8 @@ def test_logout_revokes_session(client: TestClient, login):
     response = client.post("/api/v1/auth/logout", headers={"X-CSRF-Token": csrf})
     assert response.status_code == 200
     assert client.get("/api/v1/auth/me").status_code == 401
+    assert "linsec_session" not in client.cookies
+    assert "linsec_csrf" not in client.cookies
 
 
 def test_viewer_cannot_mutate(client: TestClient, csrf_headers):

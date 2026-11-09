@@ -6,6 +6,12 @@ multi-layer Linux security platform with a real UI, real KPIs, and auditable
 operations. The five-layer backend and automation assets are implemented; the
 remaining work is the React SPA, production hardening, and end-to-end drills.
 
+Current product correction: the backend foundation is present, but the operator
+workflow is not complete. Generic collection views must be replaced by real
+vertical workflows for hosts, incidents, deployments, compliance and patching.
+The implementation target is defined in
+[Product security workflow](product-security-workflow.md).
+
 Assumptions:
 
 - Single-tenant, on-premise or private-cloud deployment.
@@ -69,6 +75,12 @@ Key decisions:
    external component. KernelCare is dropped because it is commercial. Wazuh
    Dashboard/Indexer already provides supervision, correlation, and behavioral
    analytics, so no separate OpenUBA stack is added.
+8. **Uyuni is externally deployed.** Uyuni officially supports containerized
+   server deployment on an openSUSE Tumbleweed host with Podman and `mgradm` or
+   `mgrctl`; server Helm charts are also available for Kubernetes. A fake
+   Uyuni Docker image or guessed REST service must not be added to the LinSec360
+   Compose stack. LinSec360 connects to a validated Uyuni XML-RPC endpoint and
+   treats missing or unreachable configuration as an explicit integration state.
 
 ---
 

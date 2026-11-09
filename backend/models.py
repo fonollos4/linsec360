@@ -129,6 +129,16 @@ class Host(TimestampMixin, Base):
     agent_id: Mapped[str | None] = mapped_column(String(64))
     os: Mapped[str | None] = mapped_column(String(128))
     last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ansible_user: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="linsec-ansible"
+    )
+    ansible_port: Mapped[int] = mapped_column(Integer, nullable=False, default=22)
+    ssh_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    ssh_fingerprint: Mapped[str | None] = mapped_column(String(128))
+    ssh_error: Mapped[str | None] = mapped_column(String(512))
+    last_ssh_test_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     added_date: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )

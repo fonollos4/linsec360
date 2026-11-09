@@ -43,6 +43,8 @@ class HostCreate(BaseModel):
     security_level: Literal["low", "medium", "high", "critical"] = "medium"
     groups: list[str] = Field(default_factory=list)
     status: Literal["pending", "deploying", "secured", "error", "unknown"] = "pending"
+    ansible_user: str = Field(default="linsec-ansible", min_length=1, max_length=64)
+    ansible_port: int = Field(default=22, ge=1, le=65535)
 
     @field_validator("name", "environment")
     @classmethod
@@ -62,6 +64,13 @@ class HostCreate(BaseModel):
             raise ValueError("invalid IPv4 address")
         return value
 
+    @field_validator("ansible_user")
+    @classmethod
+    def _ansible_user(cls, value: str) -> str:
+        if not IDENTIFIER.fullmatch(value):
+            raise ValueError("invalid SSH username")
+        return value
+
     @field_validator("groups")
     @classmethod
     def _groups(cls, values: list[str]) -> list[str]:
@@ -79,6 +88,15 @@ class HostUpdate(BaseModel):
     security_level: Literal["low", "medium", "high", "critical"] | None = None
     groups: list[str] | None = None
     status: Literal["pending", "deploying", "secured", "error", "unknown"] | None = None
+    ansible_user: str | None = Field(default=None, min_length=1, max_length=64)
+    ansible_port: int | None = Field(default=None, ge=1, le=65535)
+
+    @field_validator("ansible_user")
+    @classmethod
+    def _ansible_user(cls, value: str | None) -> str | None:
+        if value is not None and not IDENTIFIER.fullmatch(value):
+            raise ValueError("invalid SSH username")
+        return value
 
     @field_validator("ip")
     @classmethod
@@ -119,6 +137,25 @@ class HostOut(ORMModel):
     os: str | None = None
     last_seen: datetime | None = None
     added_date: datetime
+    ansible_user: str = "linsec-ansible"
+    ansible_port: int = 22
+    ssh_status: str = "pending"
+    ssh_fingerprint: str | None = None
+    ssh_error: str | None = None
+    last_ssh_test_at: datetime | None = None
+
+
+class SSHPublicKeyOut(BaseModel):
+    public_key: str
+    private_key_path: str
+
+
+class SSHTestOut(BaseModel):
+    reachable: bool
+    ssh_status: str
+    fingerprint: str | None = None
+    fingerprint_changed: bool = False
+    message: str
 
 
 class PlaybookCreate(BaseModel):
@@ -157,6 +194,8 @@ class DeploymentCreate(BaseModel):
     playbook: str
     hosts: list[str] = Field(default_factory=list)
     group: str | None = None
+    check_mode: bool = False
+    extra_vars: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("environment", "playbook")
     @classmethod

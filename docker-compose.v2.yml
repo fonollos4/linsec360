@@ -36,6 +36,11 @@ x-backend-environment: &backend-environment
   LINSEC_WAZUH_INDEXER_PASSWORD: ${WAZUH_ADMIN_PASSWORD:-}
   LINSEC_WAZUH_INDEXER_VERIFY_TLS: ${LINSEC_WAZUH_INDEXER_VERIFY_TLS:-true}
   LINSEC_WAZUH_CA_BUNDLE: /opt/linsec/certs/wazuh/root-ca.pem
+  LINSEC_UYUNI_API_URL: ${LINSEC_UYUNI_API_URL:-http://uyuni/rpc/api}
+  LINSEC_UYUNI_USERNAME: ${UYUNI_ADMIN_USERNAME:-${LINSEC_UYUNI_USERNAME:-admin}}
+  LINSEC_UYUNI_PASSWORD: ${UYUNI_ADMIN_PASSWORD:-${LINSEC_UYUNI_PASSWORD:-}}
+  LINSEC_UYUNI_VERIFY_TLS: ${LINSEC_UYUNI_VERIFY_TLS:-true}
+  LINSEC_UYUNI_TIMEOUT_SECONDS: ${LINSEC_UYUNI_TIMEOUT_SECONDS:-30}
 
 x-backend-build: &backend-build
   context: .
@@ -203,7 +208,13 @@ services:
     volumes:
       - linsec_postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U linsec -d linsec"]
+      test:
+        - CMD-SHELL
+        - |
+          escaped_password=$$(printf '%s' "$$POSTGRES_PASSWORD" | sed "s/'/''/g")
+          psql -U linsec -d linsec -v ON_ERROR_STOP=1 \
+            -c "ALTER ROLE linsec PASSWORD '$$escaped_password'" >/dev/null &&
+          pg_isready -U linsec -d linsec
       interval: 5s
       timeout: 5s
       retries: 20
@@ -219,6 +230,146 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+
+  uyuni-config:
+    profiles: ["uyuni"]
+    image: alpine:3.20
+    restart: "no"
+    environment:
+      UYUNI_ADMIN_PASSWORD: ${UYUNI_ADMIN_PASSWORD:-}
+      UYUNI_POSTGRES_PASSWORD: ${UYUNI_POSTGRES_PASSWORD:-}
+      UYUNI_DB_PASSWORD: ${UYUNI_DB_PASSWORD:-}
+      UYUNI_REPORT_DB_PASSWORD: ${UYUNI_REPORT_DB_PASSWORD:-}
+      UYUNI_FQDN: ${UYUNI_FQDN:-uyuni}
+    volumes:
+      - uyuni-certs-v3:/certs
+    command:
+      - sh
+      - -c
+      - |
+        test -n "$UYUNI_ADMIN_PASSWORD" || { echo "Missing required Uyuni deployment variable: UYUNI_ADMIN_PASSWORD" >&2; exit 1; }
+        test -n "$UYUNI_POSTGRES_PASSWORD" || { echo "Missing required Uyuni deployment variable: UYUNI_POSTGRES_PASSWORD" >&2; exit 1; }
+        test -n "$UYUNI_DB_PASSWORD" || { echo "Missing required Uyuni deployment variable: UYUNI_DB_PASSWORD" >&2; exit 1; }
+        test -n "$UYUNI_REPORT_DB_PASSWORD" || { echo "Missing required Uyuni deployment variable: UYUNI_REPORT_DB_PASSWORD" >&2; exit 1; }
+        if [ ! -f /certs/trust/anchors/LOCAL-RHN-ORG-TRUSTED-SSL-CERT ]; then
+          apk add --no-cache openssl >/dev/null
+          mkdir -p /certs/trust/anchors /certs/tls/certs /certs/tls/private
+          openssl req -x509 -newkey rsa:4096 -nodes -days 3650 \
+            -subj "/CN=LinSec360 Uyuni CA" \
+            -keyout /certs/tls/private/uyuni-ca.key \
+            -out /certs/trust/anchors/LOCAL-RHN-ORG-TRUSTED-SSL-CERT >/dev/null 2>&1
+          openssl req -newkey rsa:4096 -nodes \
+            -subj "/CN=$UYUNI_FQDN" \
+            -keyout /certs/tls/private/spacewalk.key \
+            -out /tmp/uyuni.csr >/dev/null 2>&1
+          printf 'subjectAltName=DNS:%s,DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=serverAuth\n' "$UYUNI_FQDN" >/tmp/uyuni.ext
+          openssl x509 -req -days 3650 -in /tmp/uyuni.csr \
+            -CA /certs/trust/anchors/LOCAL-RHN-ORG-TRUSTED-SSL-CERT \
+            -CAkey /certs/tls/private/uyuni-ca.key -CAcreateserial \
+            -extfile /tmp/uyuni.ext \
+            -out /certs/tls/certs/spacewalk.crt >/dev/null 2>&1
+          cp /certs/trust/anchors/LOCAL-RHN-ORG-TRUSTED-SSL-CERT \
+            /certs/trust/anchors/DB-RHN-ORG-TRUSTED-SSL-CERT
+          chmod 600 /certs/tls/private/*.key
+        fi
+        echo "Uyuni deployment configuration is complete"
+
+  uyuni-db:
+    profiles: ["uyuni"]
+    image: registry.opensuse.org/uyuni/server-postgresql:latest
+    restart: unless-stopped
+    environment:
+      TZ: ${UYUNI_TIMEZONE:-Etc/UTC}
+      POSTGRES_USER: ${UYUNI_POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${UYUNI_POSTGRES_PASSWORD:-}
+      MANAGER_USER: ${UYUNI_DB_USERNAME:-uyuni}
+      MANAGER_PASS: ${UYUNI_DB_PASSWORD:-}
+      REPORT_DB_USER: ${UYUNI_REPORT_DB_USERNAME:-reportdb}
+      REPORT_DB_PASS: ${UYUNI_REPORT_DB_PASSWORD:-}
+      POD_NETWORK: ${UYUNI_POD_NETWORK:-172.30.0.0/16}
+    volumes:
+      - uyuni-postgresql-v3:/var/lib/pgsql/data
+      - uyuni-certs-v3:/etc/pki
+    depends_on:
+      uyuni-config:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d susemanager 2>/dev/null || pg_isready -U postgres"]
+      interval: 15s
+      timeout: 5s
+      retries: 40
+      start_period: 60s
+
+  uyuni-pg-hba:
+    profiles: ["uyuni"]
+    image: postgres:16-alpine
+    restart: "no"
+    environment:
+      UYUNI_POSTGRES_PASSWORD: ${UYUNI_POSTGRES_PASSWORD:-}
+      UYUNI_POD_NETWORK: ${UYUNI_POD_NETWORK:-172.30.0.0/16}
+      PGCONNECT_TIMEOUT: "5"
+    volumes:
+      - uyuni-postgresql-v3:/var/lib/pgsql/data
+    depends_on:
+      uyuni-db:
+        condition: service_healthy
+    command:
+      - sh
+      - -c
+      - |
+        test -n "$UYUNI_POSTGRES_PASSWORD" || exit 1
+        grep -Fq "host all all $UYUNI_POD_NETWORK scram-sha-256" /var/lib/pgsql/data/pg_hba_custom.conf 2>/dev/null ||
+          printf '\nhost all all %s scram-sha-256\n' "$UYUNI_POD_NETWORK" >> /var/lib/pgsql/data/pg_hba_custom.conf
+        PGPASSWORD="$UYUNI_POSTGRES_PASSWORD" psql -h uyuni-db -U postgres -d postgres -v ON_ERROR_STOP=1 -tAc 'SELECT pg_reload_conf()'
+
+  uyuni:
+    profiles: ["uyuni"]
+    image: registry.opensuse.org/uyuni/server:latest
+    hostname: ${UYUNI_FQDN:-uyuni}
+    restart: unless-stopped
+    privileged: true
+    cap_add:
+      - SYS_ADMIN
+    environment:
+      container: oci
+      TZ: ${UYUNI_TIMEZONE:-Etc/UTC}
+      UYUNI_HOSTNAME: ${UYUNI_FQDN:-uyuni}
+      ADMIN_USER: ${UYUNI_ADMIN_USERNAME:-admin}
+      ADMIN_PASS: ${UYUNI_ADMIN_PASSWORD:-}
+      MANAGER_USER: ${UYUNI_DB_USERNAME:-uyuni}
+      MANAGER_PASS: ${UYUNI_DB_PASSWORD:-}
+      REPORT_DB_USER: ${UYUNI_REPORT_DB_USERNAME:-reportdb}
+      REPORT_DB_PASS: ${UYUNI_REPORT_DB_PASSWORD:-}
+      MANAGER_DB_NAME: susemanager
+      MANAGER_DB_HOST: uyuni-db
+      MANAGER_DB_PORT: "5432"
+      EXTERNALDB_PROVIDER: ""
+      REPORT_DB_NAME: reportdb
+      REPORT_DB_HOST: uyuni-db
+      REPORT_DB_PORT: "5432"
+      MANAGER_ADMIN_EMAIL: ${UYUNI_ADMIN_EMAIL:-admin@uyuni.local}
+      MANAGER_MAIL_FROM: ${UYUNI_MAIL_FROM:-admin@uyuni.local}
+    ports:
+      - "${UYUNI_HTTP_PORT:-8081}:80"
+      - "${UYUNI_HTTPS_PORT:-8443}:443"
+      - "${UYUNI_SALT_PUBLISH_PORT:-4505}:4505"
+      - "${UYUNI_SALT_REQUEST_PORT:-4506}:4506"
+    volumes:
+      - uyuni-var-v3:/var/lib/uyuni
+      - uyuni-etc-v3:/etc/uyuni
+      - uyuni-certs-v3:/etc/pki
+      - uyuni-cache-v3:/var/cache
+      - uyuni-spacewalk-v3:/srv/www/htdocs
+      - uyuni-postgresql-v3:/var/lib/pgsql:ro
+    depends_on:
+      uyuni-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fk https://localhost/rpc/api >/dev/null 2>&1 || curl -f http://localhost/rpc/api >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 60
+      start_period: 180s
 
   api:
     build: *backend-build
@@ -273,11 +424,24 @@ services:
       redis:
         condition: service_healthy
 
+networks:
+  default:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
+
 volumes:
   linsec_postgres:
   linsec_redis:
   linsec_var:
   linsec_logs:
+  uyuni-postgresql-v3:
+  uyuni-var-v3:
+  uyuni-etc-v3:
+  uyuni-certs-v3:
+  uyuni-cache-v3:
+  uyuni-spacewalk-v3:
   wazuh_api_configuration:
   wazuh_etc:
   wazuh_logs:

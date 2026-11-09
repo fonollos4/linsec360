@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import xmlrpc.client
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
+import httpx
 from fastapi.testclient import TestClient
 
 from backend import models
@@ -454,6 +457,42 @@ class FakeUyuniClient:
                 }
             )
         ]
+
+
+def test_uyuni_client_uses_xmlrpc():
+    settings = SimpleNamespace(
+        uyuni_configured=True,
+        uyuni_api_url="https://uyuni.example/rpc/api",
+        uyuni_username="admin",
+        uyuni_password="secret",
+        uyuni_verify_tls=False,
+        uyuni_timeout_seconds=10,
+    )
+    client = uyuni_service.UyuniClient(settings=settings)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params, method = xmlrpc.client.loads(request.content)
+        if method == "auth.login":
+            assert params == ("admin", "secret")
+            body = xmlrpc.client.dumps(("session-123",), methodresponse=True)
+        elif method == "system.listSystems":
+            assert params == ("session-123",)
+            body = xmlrpc.client.dumps(
+                ([{"id": 42, "name": "web01", "status": "online"}],),
+                methodresponse=True,
+            )
+        elif method == "auth.logout":
+            assert params == ("session-123",)
+            body = xmlrpc.client.dumps((1,), methodresponse=True)
+        else:
+            raise AssertionError(method)
+        return httpx.Response(200, content=body)
+
+    client._http = httpx.Client(transport=httpx.MockTransport(handler))
+    systems = client.list_systems()
+    assert systems[0]["uyuni_system_id"] == 42
+    assert systems[0]["host_name"] == "web01"
+    client.close()
 
 
 def test_uyuni_sync_normalizes_systems_and_errata(client: TestClient, csrf_headers):

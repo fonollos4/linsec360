@@ -85,6 +85,12 @@ def create_deployment(
 
     deployment_id = str(uuid.uuid4())
     settings.log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    extra_vars = {
+        "linsec_env": environment.name,
+        **payload.extra_vars,
+    }
+    if payload.check_mode:
+        extra_vars["linsec_check_mode"] = "true"
     deployment = models.Deployment(
         id=deployment_id,
         playbook_id=playbook.id,
@@ -94,7 +100,7 @@ def create_deployment(
         status="queued",
         requested_by_id=actor.id,
         log_path=str(settings.log_dir / f"deploy-{deployment_id}.log"),
-        extra_vars={"linsec_env": environment.name},
+        extra_vars=extra_vars,
     )
     deployment.targets = [
         models.DeploymentTarget(

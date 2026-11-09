@@ -134,8 +134,18 @@ def set_auth_cookies(
 
 def clear_auth_cookies(response: Response) -> None:
     settings = get_settings()
-    response.delete_cookie(settings.cookie_name, path="/")
-    response.delete_cookie(settings.csrf_cookie_name, path="/")
+    response.delete_cookie(
+        settings.cookie_name,
+        path="/",
+        secure=settings.cookie_secure,
+        samesite=settings.cookie_samesite,
+    )
+    response.delete_cookie(
+        settings.csrf_cookie_name,
+        path="/",
+        secure=settings.cookie_secure,
+        samesite=settings.cookie_samesite,
+    )
 
 
 def _token_from_request(request: Request) -> str | None:

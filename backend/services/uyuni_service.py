@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import xmlrpc.client
 from datetime import UTC, datetime
 from typing import Any
 
@@ -91,48 +93,60 @@ class UyuniClient:
             verify=self.settings.uyuni_verify_tls,
             timeout=self.settings.uyuni_timeout_seconds,
         )
-        try:
-            response = client.post(
-                self._base("/auth/login"),
-                json={
-                    "login": self.settings.uyuni_username,
-                    "password": self.settings.uyuni_password,
-                },
-            )
-            response.raise_for_status()
-            payload = response.json()
-            if not payload.get("success", True):
-                raise IntegrationUnavailable(
-                    f"Uyuni login failed: {payload.get('message', 'unknown error')}"
-                )
-        except httpx.HTTPError as exc:
-            client.close()
-            raise IntegrationUnavailable(f"Uyuni login failed: {exc}") from exc
         self._http = client
         return client
 
-    def _get(self, path: str, params: dict | None = None) -> Any:
+    def _call(self, method: str, *params: Any) -> Any:
         client = self._client()
         try:
-            response = client.get(self._base(path), params=params)
-            response.raise_for_status()
-            payload = response.json()
-        except httpx.HTTPError as exc:
-            raise IntegrationUnavailable(f"Uyuni API request failed: {exc}") from exc
-        if isinstance(payload, dict) and payload.get("success") is False:
-            raise IntegrationUnavailable(
-                f"Uyuni API error: {payload.get('message', 'unknown error')}"
+            if method == "auth.login":
+                call_params = (
+                    self.settings.uyuni_username,
+                    self.settings.uyuni_password,
+                )
+            else:
+                call_params = (self._session_key, *params)
+            body = xmlrpc.client.dumps(
+                call_params,
+                methodname=method,
+                allow_none=True,
             )
-        return payload.get("result", payload) if isinstance(payload, dict) else payload
+            response = client.post(
+                self.settings.uyuni_api_url.rstrip("/"),
+                content=body,
+                headers={"Content-Type": "text/xml"},
+            )
+            response.raise_for_status()
+            result, _ = xmlrpc.client.loads(response.content)
+            if result and len(result) == 1:
+                return result[0]
+        except xmlrpc.client.Fault as exc:
+            raise IntegrationUnavailable(
+                f"Uyuni XML-RPC error {exc.faultCode}: {exc.faultString}"
+            ) from exc
+        except (httpx.HTTPError, xmlrpc.client.ResponseError, xmlrpc.client.ExpatError) as exc:
+            raise IntegrationUnavailable(f"Uyuni API request failed: {exc}") from exc
+        else:
+            return result
+
+    @property
+    def _session_key(self) -> str:
+        if hasattr(self, "_session"):
+            return self._session
+        session = self._call("auth.login")
+        if not isinstance(session, str) and not isinstance(session, int):
+            raise IntegrationUnavailable("Uyuni login returned an invalid session")
+        self._session = str(session)
+        return self._session
 
     def list_systems(self) -> list[dict]:
-        result = self._get("/system/listSystems")
+        result = self._call("system.listSystems")
         if not isinstance(result, list):
             return []
         return [normalize_system(item) for item in result if item.get("id")]
 
     def system_channels(self, system_id: int) -> list[str]:
-        result = self._get("/system/getChannels", {"sid": system_id})
+        result = self._call("system.getChannels", system_id)
         if isinstance(result, list):
             return [
                 item.get("label") or item.get("name")
@@ -142,7 +156,7 @@ class UyuniClient:
         return []
 
     def relevant_errata(self, system_id: int) -> list[dict]:
-        result = self._get("/system/getRelevantErrata", {"sid": system_id})
+        result = self._call("system.getRelevantErrata", system_id)
         if not isinstance(result, list):
             return []
         return [normalize_errata(item) for item in result]
@@ -151,6 +165,9 @@ class UyuniClient:
         self.list_systems()
 
     def close(self) -> None:
+        if self._http is not None and hasattr(self, "_session"):
+            with contextlib.suppress(IntegrationUnavailable):
+                self._call("auth.logout")
         if self._http is not None:
             self._http.close()
             self._http = None

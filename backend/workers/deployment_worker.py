@@ -65,9 +65,10 @@ def _build_command(
     env_vars_path: Path,
     host_vars_path: Path,
     target_hosts: list[str],
+    check_mode: bool = False,
 ) -> list[str]:
     settings = get_settings()
-    return [
+    command = [
         settings.ansible_playbook_bin,
         "-i",
         str(inventory_path),
@@ -79,6 +80,9 @@ def _build_command(
         "--limit",
         ",".join(target_hosts),
     ]
+    if check_mode:
+        command.append("--check")
+    return command
 
 
 def _append_log(log_path: Path, text: str) -> None:
@@ -156,6 +160,7 @@ def run_deployment(deployment_id: str) -> None:
                     "linsec_env": deployment.environment_name,
                     "linsec_config_dir": str(settings.config_dir),
                     "linsec_artifact_dir": str(settings.artifacts_dir),
+                    **deployment.extra_vars,
                 },
                 settings.log_dir,
             )
@@ -171,6 +176,7 @@ def run_deployment(deployment_id: str) -> None:
                 env_vars_path=env_vars_path,
                 host_vars_path=host_vars_path,
                 target_hosts=target_names,
+                check_mode=bool(deployment.extra_vars.get("linsec_check_mode")),
             )
             environment = _ansible_environment(settings)
 

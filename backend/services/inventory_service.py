@@ -23,6 +23,9 @@ def build_inventory(hosts: list[models.Host]) -> dict:
             group = children.setdefault(group_name, {"hosts": {}})
             group["hosts"][host.name] = {
                 "ansible_host": host.ip,
+                "ansible_user": host.ansible_user,
+                "ansible_port": host.ansible_port,
+                "ansible_private_key_file": "/opt/linsec/.ssh/id_ed25519",
                 "linsec_security_level": host.security_level,
             }
     return {"all": {"children": children}}
