@@ -16,6 +16,7 @@ from ..errors import NotFoundError
 
 
 def build_inventory(hosts: list[models.Host]) -> dict:
+    private_key_path = str(get_settings().ansible_ssh_private_key_path)
     children: dict[str, dict] = {}
     for host in hosts:
         group_names = [group.name for group in host.groups] or ["ungrouped"]
@@ -25,7 +26,7 @@ def build_inventory(hosts: list[models.Host]) -> dict:
                 "ansible_host": host.ip,
                 "ansible_user": host.ansible_user,
                 "ansible_port": host.ansible_port,
-                "ansible_private_key_file": "/opt/linsec/.ssh/id_ed25519",
+                "ansible_private_key_file": private_key_path,
                 "linsec_security_level": host.security_level,
             }
     return {"all": {"children": children}}

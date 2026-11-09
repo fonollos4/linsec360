@@ -82,7 +82,7 @@ def get_ansible_public_key(
     key = ssh_service.public_key()
     return SSHPublicKeyOut(
         public_key=key,
-        private_key_path="/opt/linsec/.ssh/id_ed25519",
+        private_key_path=str(ssh_service.private_key_path()),
     )
 
 

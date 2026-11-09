@@ -40,16 +40,17 @@ The first copy of `.env.example` also contains the Uyuni placeholders. Uyuni
 is optional and can be left empty when starting the standard stack.
 
 To enable Uyuni, generate its application and database secrets and keep the
-same administrator password in both variables:
+same administrator password in both variables. Each generated Uyuni password
+is exactly 32 hexadecimal characters:
 
 ```bash
-UYUNI_ADMIN_PASSWORD=$(openssl rand -hex 32)
+UYUNI_ADMIN_PASSWORD=$(openssl rand -hex 16)
 sed -i \
   -e "s/^LINSEC_UYUNI_PASSWORD=.*/LINSEC_UYUNI_PASSWORD='$UYUNI_ADMIN_PASSWORD'/" \
   -e "s/^UYUNI_ADMIN_PASSWORD=.*/UYUNI_ADMIN_PASSWORD='$UYUNI_ADMIN_PASSWORD'/" \
   .env
 for key in UYUNI_POSTGRES_PASSWORD UYUNI_DB_PASSWORD UYUNI_REPORT_DB_PASSWORD; do
-  value=$(openssl rand -hex 32)
+  value=$(openssl rand -hex 16)
   sed -i "s/^${key}=.*/${key}='$value'/" .env
 done
 chmod 600 .env
@@ -86,8 +87,9 @@ docker compose -f docker-compose.v2.yml up --build -d
 docker compose -f docker-compose.v2.yml ps
 ```
 
-The V2 stack exposes the React UI on `LINSEC_WEB_PORT` (default `80`), the API
-on `LINSEC_API_PORT` (default `8080`), Wazuh Dashboard on
+The V2 stack exposes the React UI on `LINSEC_WEB_PORT` (default `80`), optional
+direct HTTPS on `LINSEC_HTTPS_PORT` (default `8444`), the API on
+`LINSEC_API_PORT` (default `8080`), Wazuh Dashboard on
 `WAZUH_DASHBOARD_PORT` (default `443`), Wazuh Manager API on
 `WAZUH_API_PORT` (default `55000`), and the Indexer on `WAZUH_INDEXER_PORT`
 (default `9200`). API and worker containers already include `ansible-core 2.18`;
@@ -131,7 +133,23 @@ curl http://localhost:8080/ready
 curl http://localhost/
 ```
 
-Open the LinSec360 UI at `http://localhost`, and Wazuh Dashboard at
+For production, mount a trusted certificate chain and its private key as
+`config/tls/fullchain.pem` and `config/tls/privkey.pem`, then set
+`LINSEC_ENVIRONMENT=production`, `LINSEC_COOKIE_SECURE=true`, and
+`LINSEC_TLS_ENABLED=true` in `.env`. The Web container terminates HTTPS on
+`LINSEC_HTTPS_PORT`; HTTP is redirected to HTTPS. Production startup fails if
+TLS is enabled without both certificate files, or if production mode has TLS
+disabled. Do not use a self-signed certificate for production.
+
+The Ansible SSH private key is mounted read-only from `LINSEC_SSH_KEY_DIR`
+(default `./.ssh`). To use an existing key later, put it in that host directory
+with mode `0600`, set `LINSEC_ANSIBLE_SSH_PRIVATE_KEY_PATH` to its container
+path (for example `/opt/linsec/.ssh/id_ed25519`), then recreate both `api` and
+`worker`. Passphrase-protected keys are not supported. The Settings page checks
+the configured key and displays only its public half; it never exposes the
+private key.
+
+Open the LinSec360 UI at `http://localhost` for local development, and Wazuh Dashboard at
 `https://localhost`. Wazuh Dashboard uses the generated Wazuh admin credentials
 from `.env`.
 

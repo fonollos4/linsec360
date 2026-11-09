@@ -1,3 +1,6 @@
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
 import yaml
 
@@ -5,6 +8,7 @@ from backend import models
 from backend.config import get_settings
 from backend.db import session_scope
 from backend.errors import NotFoundError
+from backend.services import inventory_service
 from backend.services.inventory_service import build_inventory, write_inventory
 
 
@@ -55,6 +59,28 @@ def test_build_inventory_groups_hosts(client):
     assert children["web"]["hosts"]["web01"]["linsec_security_level"] == "high"
     assert "db01" in children["database"]["hosts"]
     assert "lonely" in children["ungrouped"]["hosts"]
+
+
+def test_build_inventory_uses_configured_ssh_key_path(
+    client, monkeypatch, tmp_path: Path
+):
+    _seed()
+    key_path = tmp_path / "ansible-key"
+    monkeypatch.setattr(
+        inventory_service,
+        "get_settings",
+        lambda: SimpleNamespace(ansible_ssh_private_key_path=key_path),
+    )
+    with session_scope() as db:
+        hosts = db.query(models.Host).order_by(models.Host.name).all()
+        inventory = build_inventory(hosts)
+
+    assert (
+        inventory["all"]["children"]["web"]["hosts"]["web01"][
+            "ansible_private_key_file"
+        ]
+        == str(key_path)
+    )
 
 
 def test_write_inventory_creates_private_yaml(client):

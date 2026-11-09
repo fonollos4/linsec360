@@ -7,12 +7,14 @@ import binascii
 import hashlib
 import os
 import shlex
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
 
 import yaml
 
+from ..config import get_settings
 from ..errors import IntegrationUnavailable
 
 
@@ -20,12 +22,51 @@ def _ssh_dir() -> Path:
     return Path(__file__).resolve().parents[2] / ".ssh"
 
 
+def private_key_path() -> Path:
+    return get_settings().ansible_ssh_private_key_path.expanduser()
+
+
+def _derive_public_key(private_key: Path) -> str:
+    if private_key.is_symlink() or not private_key.is_file():
+        raise IntegrationUnavailable("configured Ansible SSH private key is missing")
+    if stat.S_IMODE(private_key.stat().st_mode) & 0o077:
+        raise IntegrationUnavailable(
+            "Ansible SSH private key permissions must be 600 or stricter"
+        )
+    try:
+        result = subprocess.run(
+            ["ssh-keygen", "-y", "-P", "", "-f", str(private_key)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise IntegrationUnavailable(
+            "unable to validate the Ansible SSH private key"
+        ) from exc
+    if result.returncode != 0:
+        raise IntegrationUnavailable(
+            "Ansible SSH private key is invalid or passphrase-protected"
+        )
+    key = result.stdout.strip()
+    if len(key.split()) < 2:
+        raise IntegrationUnavailable("Ansible SSH private key is invalid")
+    return key
+
+
 def ensure_keypair() -> tuple[Path, Path]:
     ssh_dir = _ssh_dir()
+    private_key = private_key_path()
+    default_private_key = ssh_dir / "id_ed25519"
+    public_key = private_key.with_name(private_key.name + ".pub")
+
+    if private_key.resolve() != default_private_key.resolve():
+        _derive_public_key(private_key)
+        return private_key, public_key
+
     ssh_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(ssh_dir, 0o700)
-    private_key = ssh_dir / "id_ed25519"
-    public_key = ssh_dir / "id_ed25519.pub"
 
     if not private_key.exists():
         subprocess.run(
@@ -47,16 +88,16 @@ def ensure_keypair() -> tuple[Path, Path]:
             timeout=30,
         )
         os.chmod(private_key, 0o600)
-        os.chmod(public_key, 0o644)
-    if not public_key.exists():
-        raise IntegrationUnavailable("SSH public key is missing")
+        if public_key.exists():
+            os.chmod(public_key, 0o644)
+    _derive_public_key(private_key)
     return private_key, public_key
 
 
 def public_key() -> str:
     try:
-        _, public_key_path = ensure_keypair()
-        return public_key_path.read_text(encoding="utf-8").strip()
+        private_key, _ = ensure_keypair()
+        return _derive_public_key(private_key)
     except (OSError, subprocess.SubprocessError) as exc:
         raise IntegrationUnavailable("unable to provision the Ansible SSH key") from exc
 
@@ -264,9 +305,7 @@ def install_public_key_with_password(
     password: str,
     known_hosts_entry: str,
 ) -> bool:
-    _, public_key_path = ensure_keypair()
-    public_key = public_key_path.read_text(encoding="utf-8").strip()
-    quoted_key = shlex.quote(public_key)
+    quoted_key = shlex.quote(public_key())
     remote_command = (
         "umask 077; mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
         "touch ~/.ssh/authorized_keys && "

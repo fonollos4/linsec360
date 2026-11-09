@@ -71,6 +71,7 @@ class Settings(BaseSettings):
     # Optional explicit ansible.cfg. When empty the worker relies on the
     # system/user configuration but always sets ANSIBLE_ROLES_PATH itself.
     ansible_config_path: Path | None = None
+    ansible_ssh_private_key_path: Path = BASE_DIR / ".ssh" / "id_ed25519"
 
     # Wazuh API / indexer. Empty values mean "not configured"; the API then
     # returns explicit unknown/503 states instead of fabricated data.

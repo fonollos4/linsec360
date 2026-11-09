@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity,
@@ -1631,9 +1631,21 @@ function useIntegrationTest(name: 'wazuh' | 'uyuni' | 'ansible', client: ReturnT
 function Settings() {
   const client = useQueryClient()
   const { data, isLoading, isError } = useQuery({ queryKey: ['integrations'], queryFn: api.integrations })
+  const sshKey = useQuery({ queryKey: ['ansible-public-key'], queryFn: api.ansiblePublicKey, retry: false })
   const testWazuh = useIntegrationTest('wazuh', client)
   const testUyuni = useIntegrationTest('uyuni', client)
   const testAnsible = useIntegrationTest('ansible', client)
+  const { mutate: runWazuhTest } = testWazuh
+  const { mutate: runUyuniTest } = testUyuni
+  const { mutate: runAnsibleTest } = testAnsible
+  const autoTestsStarted = useRef(false)
+  useEffect(() => {
+    if (!data || autoTestsStarted.current) return
+    autoTestsStarted.current = true
+    runWazuhTest()
+    runUyuniTest()
+    runAnsibleTest()
+  }, [data, runWazuhTest, runUyuniTest, runAnsibleTest])
   if (isLoading) return <Loading label="Chargement des intégrations…" />
   if (isError || !data) return <div className="alert error">Impossible de charger les paramètres.</div>
   const integrations = [
@@ -1663,7 +1675,7 @@ function Settings() {
               <div className="stat-lines">
                 <div className="stat-line"><span>Configuré</span><strong>{statusText(state.configured)}</strong></div>
                 {key === 'ansible' && <div className="stat-line"><span>Disponible localement</span><strong>{statusText(state.available)}</strong></div>}
-                <div className="stat-line"><span>Joignable</span><strong>{state.reachable === null ? (state.configured ? 'À tester' : 'Non configuré') : statusText(state.reachable)}</strong></div>
+                <div className="stat-line"><span>Joignable</span><strong>{mutation.isPending ? 'Test en cours…' : state.reachable === null ? (state.configured ? 'À tester' : 'Non configuré') : statusText(state.reachable)}</strong></div>
               </div>
               {state.detail && <p className="integrations-detail">{state.detail}</p>}
               {mutation.isError && <div className="alert error" style={{ marginTop: 12 }}>{mutation.error instanceof Error ? mutation.error.message : 'Test impossible.'}</div>}
@@ -1673,6 +1685,25 @@ function Settings() {
             </div>
           </article>
         ))}
+        <article className="panel">
+          <div className="panel-heading">
+            <div className="cell-title"><span className="metric-icon tone-cyan"><Server /></span><div className="cell-stack"><strong>Clé SSH Ansible</strong><small>Clé privée montée depuis l’hôte</small></div></div>
+            <span className={`badge ${sshKey.isLoading ? 'muted' : sshKey.isError ? 'danger' : 'success'}`}>
+              <span className="dot" />{sshKey.isLoading ? 'Vérification…' : sshKey.isError ? 'Indisponible' : 'Disponible'}
+            </span>
+          </div>
+          <div className="panel-body">
+            {sshKey.isError ? (
+              <div className="alert error">{sshKey.error instanceof Error ? sshKey.error.message : 'Clé SSH indisponible.'}</div>
+            ) : sshKey.data ? (
+              <>
+                <div className="stat-lines"><div className="stat-line"><span>Chemin privé dans les conteneurs</span><code className="mono">{sshKey.data.private_key_path}</code></div></div>
+                <p className="integration-help">La clé privée reste sur l’hôte et est montée en lecture seule. Pour utiliser votre clé, placez-la dans le dossier configuré par <code>LINSEC_SSH_KEY_DIR</code>, puis définissez <code>LINSEC_ANSIBLE_SSH_PRIVATE_KEY_PATH</code> dans <code>.env</code>. Le fichier doit être lisible par l’API/worker et avoir des permissions 600 ou plus strictes ; les clés chiffrées ne sont pas prises en charge.</p>
+                <div className="integrations-detail mono">{sshKey.data.public_key}</div>
+              </>
+            ) : null}
+          </div>
+        </article>
       </div>
       <p className="integration-help">Ansible est vérifié localement dans l’environnement de l’API (version uniquement, aucun playbook n’est exécuté). Wazuh et Uyuni sont testés via leurs API configurées. Aucune valeur synthétique n’est affichée : une source absente reste explicitement inconnue.</p>
     </div>

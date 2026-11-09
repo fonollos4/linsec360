@@ -552,6 +552,9 @@ def test_key_installation_is_idempotent_and_sets_private_permissions(
     monkeypatch.setattr(
         ssh_service, "ensure_keypair", lambda: (private_key, public_key)
     )
+    monkeypatch.setattr(
+        ssh_service, "public_key", lambda: "ssh-ed25519 AAAA linsec-ansible"
+    )
     captured = {}
 
     def fake_run(command, **kwargs):
