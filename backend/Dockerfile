@@ -18,8 +18,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /opt/linsec
 
 COPY backend/requirements.txt /tmp/requirements.txt
+COPY taskengine/requirements.yml /tmp/ansible-collections.yml
 RUN pip install --no-cache-dir -r /tmp/requirements.txt \
-    && pip install --no-cache-dir "ansible-core==2.18.*"
+    && pip install --no-cache-dir "ansible-core==2.18.*" \
+    && ansible-galaxy collection install \
+        -r /tmp/ansible-collections.yml \
+        --collections-path /usr/share/ansible/collections
 
 COPY backend /opt/linsec/backend
 COPY taskengine/playbooks /opt/linsec/taskengine/playbooks
