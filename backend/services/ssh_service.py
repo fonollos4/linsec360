@@ -6,6 +6,7 @@ import base64
 import binascii
 import hashlib
 import os
+import shlex
 import subprocess
 import tempfile
 from pathlib import Path
@@ -83,7 +84,9 @@ def scan_host_key(ip: str, port: int) -> tuple[str, str] | None:
             blob = base64.b64decode(encoded, validate=True)
         except (UnicodeEncodeError, ValueError, binascii.Error):
             continue
-        digest = base64.b64encode(hashlib.sha256(blob).digest()).decode("ascii").rstrip("=")
+        digest = (
+            base64.b64encode(hashlib.sha256(blob).digest()).decode("ascii").rstrip("=")
+        )
         host = ip if port == 22 else f"[{ip}]:{port}"
         return f"{host} {parts[1]} {parts[2]}", f"SHA256:{digest}"
     return None
@@ -165,3 +168,117 @@ def test_connection(
             inventory_path.unlink(missing_ok=True)
         if known_hosts_path is not None:
             known_hosts_path.unlink(missing_ok=True)
+
+
+def _password_ssh(
+    *,
+    ip: str,
+    port: int,
+    user: str,
+    password: str,
+    known_hosts_entry: str,
+    remote_command: str,
+) -> bool:
+    known_hosts_path: Path | None = None
+    read_fd: int | None = None
+    write_fd: int | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", suffix=".known_hosts", delete=False
+        ) as handle:
+            handle.write(known_hosts_entry + "\n")
+            known_hosts_path = Path(handle.name)
+        os.chmod(known_hosts_path, 0o600)
+
+        read_fd, write_fd = os.pipe()
+        os.write(write_fd, password.encode("utf-8") + b"\n")
+        os.close(write_fd)
+        write_fd = None
+
+        result = subprocess.run(
+            [
+                "sshpass",
+                "-d",
+                str(read_fd),
+                "ssh",
+                "-p",
+                str(port),
+                "-o",
+                f"UserKnownHostsFile={known_hosts_path}",
+                "-o",
+                "GlobalKnownHostsFile=/dev/null",
+                "-o",
+                "StrictHostKeyChecking=yes",
+                "-o",
+                "ConnectTimeout=10",
+                "-o",
+                "PreferredAuthentications=password,keyboard-interactive",
+                "-o",
+                "PubkeyAuthentication=no",
+                "-o",
+                "NumberOfPasswordPrompts=1",
+                f"{user}@{ip}",
+                remote_command,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            pass_fds=(read_fd,),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    else:
+        return result.returncode == 0
+    finally:
+        if write_fd is not None:
+            os.close(write_fd)
+        if read_fd is not None:
+            os.close(read_fd)
+        if known_hosts_path is not None:
+            known_hosts_path.unlink(missing_ok=True)
+
+
+def test_password_connection(
+    *,
+    ip: str,
+    port: int,
+    user: str,
+    password: str,
+    known_hosts_entry: str,
+) -> bool:
+    return _password_ssh(
+        ip=ip,
+        port=port,
+        user=user,
+        password=password,
+        known_hosts_entry=known_hosts_entry,
+        remote_command="true",
+    )
+
+
+def install_public_key_with_password(
+    *,
+    ip: str,
+    port: int,
+    user: str,
+    password: str,
+    known_hosts_entry: str,
+) -> bool:
+    _, public_key_path = ensure_keypair()
+    public_key = public_key_path.read_text(encoding="utf-8").strip()
+    quoted_key = shlex.quote(public_key)
+    remote_command = (
+        "umask 077; mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
+        "touch ~/.ssh/authorized_keys && "
+        f"if ! grep -Fqx -- {quoted_key} ~/.ssh/authorized_keys; then "
+        f"printf '%s\\n' {quoted_key} >> ~/.ssh/authorized_keys; fi && "
+        "chmod 600 ~/.ssh/authorized_keys"
+    )
+    return _password_ssh(
+        ip=ip,
+        port=port,
+        user=user,
+        password=password,
+        known_hosts_entry=known_hosts_entry,
+        remote_command=remote_command,
+    )

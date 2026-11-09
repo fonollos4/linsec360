@@ -165,7 +165,9 @@ def create_app() -> FastAPI:
         cleaned_errors = []
         for error in exc.errors():
             item = {
-                key: value for key, value in error.items() if key not in {"ctx", "url"}
+                key: value
+                for key, value in error.items()
+                if key not in {"ctx", "input", "url"}
             }
             if error.get("ctx"):
                 item["ctx"] = {key: str(value) for key, value in error["ctx"].items()}

@@ -26,6 +26,10 @@ x-backend-environment: &backend-environment
   LINSEC_PLAYBOOK_DIR: /opt/linsec/var/playbooks
   LINSEC_INVENTORY_DIR: /opt/linsec/var/inventories
   LINSEC_BUNDLED_PLAYBOOKS_DIR: /opt/linsec/taskengine/playbooks
+  LINSEC_CONFIG_DIR: /opt/linsec/config
+  LINSEC_ARTIFACT_DIR: /opt/linsec/var/artifacts
+  LINSEC_OPENSCAP_PROFILE_DIR: /opt/linsec/config/openscap/profiles
+  LINSEC_HARDENING_BASELINE_PATH: /opt/linsec/config/hardening/baseline.yml
   LINSEC_CORS_ORIGINS: ${LINSEC_CORS_ORIGINS:-["http://localhost:5173","http://localhost"]}
   LINSEC_WAZUH_API_URL: ${LINSEC_WAZUH_API_URL:-https://wazuh.manager:55000}
   LINSEC_WAZUH_API_USERNAME: ${WAZUH_API_USERNAME:-wazuh-wui}
@@ -385,7 +389,7 @@ services:
     environment: *backend-environment
     volumes: *backend-volumes
     ports:
-      - "${LINSEC_API_PORT:-8080}:8000"
+      - "127.0.0.1:${LINSEC_API_PORT:-8080}:8000"
     depends_on:
       postgres:
         condition: service_healthy

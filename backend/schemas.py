@@ -7,7 +7,7 @@ import re
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$")
 PLAYBOOK_FILENAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*\.ya?ml$")
@@ -185,6 +185,42 @@ class SSHTestOut(BaseModel):
 
 class SSHFingerprintApproval(BaseModel):
     fingerprint: str = Field(pattern=r"^SHA256:[A-Za-z0-9+/]{43}$")
+
+
+class SSHFingerprintScanRequest(BaseModel):
+    ip: str
+    ansible_port: int = Field(default=22, ge=1, le=65535)
+
+    @field_validator("ip")
+    @classmethod
+    def _ipv4(cls, value: str) -> str:
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError as exc:
+            raise ValueError("invalid IPv4 address") from exc
+        if not isinstance(address, ipaddress.IPv4Address):
+            raise ValueError("invalid IPv4 address")
+        return value
+
+
+class SSHHostEnrollment(HostCreate):
+    status: Literal["pending"] = "pending"
+    ssh_fingerprint: None = None
+    password: SecretStr = Field(min_length=1, max_length=256)
+    verified_fingerprint: str = Field(pattern=r"^SHA256:[A-Za-z0-9+/]{43}$")
+
+    @field_validator("password")
+    @classmethod
+    def _password_single_line(cls, value: SecretStr) -> SecretStr:
+        if any(
+            character in value.get_secret_value() for character in ("\x00", "\r", "\n")
+        ):
+            raise ValueError("password must be a single line")
+        return value
+
+
+class SSHFingerprintScanOut(BaseModel):
+    fingerprint: str
 
 
 class PlaybookCreate(BaseModel):
@@ -445,9 +481,7 @@ class LivepatchOut(ORMModel):
 class LivepatchIn(BaseModel):
     host_name: str = Field(min_length=1, max_length=64)
     kernel: str = Field(min_length=1, max_length=128)
-    livepatch_state: Literal["applied", "pending", "unavailable", "unknown"] = (
-        "unknown"
-    )
+    livepatch_state: Literal["applied", "pending", "unavailable", "unknown"] = "unknown"
     patch_available: bool = False
     exposure_days: int | None = Field(default=None, ge=0)
 

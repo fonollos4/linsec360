@@ -101,6 +101,20 @@ def get_host(db: Session, host_id: int) -> models.Host:
     return host
 
 
+def ensure_host_available(db: Session, *, name: str, environment: str) -> None:
+    existing = (
+        db.query(models.Host)
+        .join(models.Environment)
+        .filter(
+            models.Host.name == name,
+            models.Environment.name == environment,
+        )
+        .one_or_none()
+    )
+    if existing is not None:
+        raise ConflictError("host already exists in this environment")
+
+
 def create_host(
     db: Session,
     *,
@@ -108,17 +122,8 @@ def create_host(
     actor: models.User,
     request: Request | None = None,
 ) -> models.Host:
+    ensure_host_available(db, name=payload.name, environment=payload.environment)
     environment = _get_or_create_environment(db, payload.environment)
-    existing = (
-        db.query(models.Host)
-        .filter(
-            models.Host.name == payload.name,
-            models.Host.environment_id == environment.id,
-        )
-        .one_or_none()
-    )
-    if existing is not None:
-        raise ConflictError("host already exists in this environment")
 
     host = models.Host(
         name=payload.name,
@@ -162,6 +167,13 @@ def update_host(
     actor: models.User,
     request: Request | None = None,
 ) -> models.Host:
+    ssh_target_changed = (
+        (payload.ip is not None and payload.ip != host.ip)
+        or (
+            payload.ansible_port is not None
+            and payload.ansible_port != host.ansible_port
+        )
+    )
     if payload.ip is not None:
         host.ip = payload.ip
     if payload.security_level is not None:
@@ -174,6 +186,11 @@ def update_host(
         host.ansible_port = payload.ansible_port
     if payload.groups is not None:
         host.groups = _get_or_create_groups(db, payload.groups)
+    if ssh_target_changed:
+        host.ssh_fingerprint = None
+        host.ssh_status = "pending"
+        host.ssh_error = None
+        host.last_ssh_test_at = None
 
     audit_service.record(
         db,

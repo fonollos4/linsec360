@@ -147,6 +147,51 @@ To view startup errors:
 docker compose -f docker-compose.v2.yml logs --tail=100
 ```
 
+### Remove a previous deployment before a fresh install
+
+Use this only when you intentionally want to erase the existing stack data.
+It permanently deletes the LinSec360 PostgreSQL database, Redis state, Wazuh
+indexes and configuration data, Uyuni database data (when present), and
+application logs/artifacts stored in Compose volumes. Back up anything that
+must be retained before continuing. Never use this procedure for a production
+reset without an approved backup and recovery plan.
+
+Run from the repository root, using the same Compose project and `.env` as the
+existing deployment. Verify the project and services first:
+
+```bash
+docker compose -f docker-compose.v2.yml ps --all
+```
+
+Stop and remove the containers, orphan containers, and all named and anonymous
+volumes declared by this Compose project. Enabling the `uyuni` profile ensures
+the optional Uyuni services are included when removing a deployment that used
+them:
+
+```bash
+docker compose -f docker-compose.v2.yml --profile uyuni \
+  down --volumes --remove-orphans
+```
+
+This removes Compose-managed data volumes; it does not delete `.env`, source
+files, bind-mounted configuration, or TLS certificates. Keep those files for
+the reinstall, and change or regenerate secrets/certificates separately only
+when required. Do not run a global `docker system prune` or manually remove
+unrelated Docker volumes.
+
+Prepare the configuration again, then reinstall. If Uyuni was not configured,
+omit `--profile uyuni` from the final start command:
+
+```bash
+python3 config/scripts/render-wazuh-config.py
+docker compose -f docker-compose.v2.yml --profile uyuni up --build -d
+docker compose -f docker-compose.v2.yml --profile uyuni ps
+```
+
+Repeat the certificate-generation step above only if the certificates do not
+exist. For a deployment without Uyuni, use the standard start command from
+step 3 instead.
+
 ### Reset the LinSec360 web administration password
 
 `LINSEC_BOOTSTRAP_ADMIN_PASSWORD` is used only when the database has no users.

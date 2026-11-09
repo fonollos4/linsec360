@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from urllib.parse import SplitResult, urlsplit
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 from sqlalchemy.orm import Session
 
 from .. import models
 from ..config import get_settings
 from ..db import get_db
-from ..errors import ConflictError
+from ..errors import ConflictError, ForbiddenError, IntegrationUnavailable
 from ..schemas import (
     AgentOut,
     HardeningCheckOut,
@@ -23,6 +24,9 @@ from ..schemas import (
     Message,
     PatchFindingOut,
     SSHFingerprintApproval,
+    SSHFingerprintScanOut,
+    SSHFingerprintScanRequest,
+    SSHHostEnrollment,
     SSHPublicKeyOut,
     SSHTestOut,
 )
@@ -33,11 +37,42 @@ from ..services import (
     livepatch_service,
     oscap_service,
     patch_service,
+    ssh_enrollment_service,
     ssh_service,
     wazuh_service,
 )
 
 router = APIRouter(prefix="/hosts", tags=["hosts"])
+
+
+def _request_origin(request: Request) -> SplitResult | None:
+    origin = request.headers.get("origin")
+    if not origin:
+        return None
+    try:
+        return urlsplit(origin)
+    except ValueError:
+        return None
+
+
+def _is_loopback_request(request: Request) -> bool:
+    if request.url.hostname not in {"localhost", "127.0.0.1", "::1"}:
+        return False
+    origin = _request_origin(request)
+    if origin is None:
+        return False
+    return origin.scheme == "http" and origin.hostname in {
+        "localhost",
+        "127.0.0.1",
+        "::1",
+    }
+
+
+def _require_secure_enrollment_transport(request: Request) -> None:
+    if request.url.scheme != "https" and not _is_loopback_request(request):
+        raise ForbiddenError(
+            "SSH password enrollment requires HTTPS; HTTP is allowed only on localhost"
+        )
 
 
 @router.get("/ssh/public-key", response_model=SSHPublicKeyOut)
@@ -49,6 +84,73 @@ def get_ansible_public_key(
         public_key=key,
         private_key_path="/opt/linsec/.ssh/id_ed25519",
     )
+
+
+@router.post(
+    "/ssh/fingerprint",
+    response_model=SSHFingerprintScanOut,
+)
+def scan_host_ssh_fingerprint(
+    payload: SSHFingerprintScanRequest,
+    user: models.User = Depends(require_roles("admin", "operator")),
+) -> SSHFingerprintScanOut:
+    fingerprint = ssh_service.scan_fingerprint(payload.ip, payload.ansible_port)
+    if fingerprint is None:
+        raise IntegrationUnavailable("unable to scan the SSH host fingerprint")
+    return SSHFingerprintScanOut(fingerprint=fingerprint)
+
+
+@router.post("/enroll", response_model=HostOut, status_code=201)
+def enroll_host(
+    payload: SSHHostEnrollment,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(require_roles("admin", "operator")),
+) -> HostOut:
+    _require_secure_enrollment_transport(request)
+    host_payload = HostCreate.model_validate(
+        payload.model_dump(exclude={"password", "verified_fingerprint"})
+    )
+    host_payload.ssh_fingerprint = payload.verified_fingerprint
+    host_service.ensure_host_available(
+        db, name=host_payload.name, environment=host_payload.environment
+    )
+
+    scanned = ssh_service.scan_host_key(host_payload.ip, host_payload.ansible_port)
+    if scanned is None:
+        raise IntegrationUnavailable("unable to verify the current SSH fingerprint")
+    known_hosts_entry, fingerprint = scanned
+    if fingerprint != payload.verified_fingerprint:
+        raise ConflictError(
+            "SSH fingerprint changed; verify it again before entering credentials"
+        )
+
+    password = payload.password.get_secret_value()
+    if not ssh_service.test_password_connection(
+        ip=host_payload.ip,
+        port=host_payload.ansible_port,
+        user=host_payload.ansible_user,
+        password=password,
+        known_hosts_entry=known_hosts_entry,
+    ):
+        raise ConflictError(
+            "SSH authentication failed; host was not added. Check the user and password."
+        )
+
+    host = host_service.create_host(
+        db, payload=host_payload, actor=user, request=request
+    )
+    host.ssh_status = "enrolling"
+    db.commit()
+    db.refresh(host)
+    background_tasks.add_task(
+        ssh_enrollment_service.install_key_in_background,
+        host.id,
+        user.id,
+        password,
+    )
+    return host_service.serialize(host)
 
 
 @router.get("", response_model=list[HostOut])
@@ -141,15 +243,11 @@ def get_host_posture(
         host_id=host.id,
         host_name=host.name,
         compliance=oscap_service.serialize(scan) if scan else None,
-        hardening=[
-            HardeningCheckOut.model_validate(check) for check in checks
-        ],
+        hardening=[HardeningCheckOut.model_validate(check) for check in checks],
         patch_findings=[
             PatchFindingOut.model_validate(finding) for finding in findings
         ],
-        livepatch=(
-            livepatch_service.serialize(livepatch) if livepatch else None
-        ),
+        livepatch=(livepatch_service.serialize(livepatch) if livepatch else None),
         agent=agent,
     )
 
@@ -263,9 +361,7 @@ def test_host_ssh(
                 "then approve the exact value"
             ),
         )
-    changed = bool(
-        host.ssh_fingerprint != fingerprint
-    )
+    changed = bool(host.ssh_fingerprint != fingerprint)
     if changed:
         host.ssh_status = "fingerprint_changed"
         host.ssh_error = "SSH host fingerprint changed; approval required"

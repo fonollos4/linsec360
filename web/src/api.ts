@@ -32,10 +32,19 @@ export interface Host {
   status: string
   ansible_user: string
   ansible_port: number
+  groups: string[]
   ssh_status: string
   ssh_fingerprint: string | null
   ssh_error: string | null
   last_ssh_test_at: string | null
+}
+export interface HostUpdateInput {
+  ip?: string
+  security_level?: string
+  groups?: string[]
+  status?: string
+  ansible_user?: string
+  ansible_port?: number
 }
 export interface HostImportItem {
   name: string
@@ -46,6 +55,16 @@ export interface HostImportItem {
   ansible_user: string
   ansible_port: number
   ssh_fingerprint: string
+}
+export interface HostEnrollmentInput {
+  name: string
+  ip: string
+  environment: string
+  security_level: string
+  groups: string[]
+  ansible_user: string
+  ansible_port: number
+  password: string
 }
 export interface HostImportResult {
   imported: Host[]
@@ -131,6 +150,38 @@ export interface AuditRecord {
   created_at: string
 }
 
+export interface KpiItem {
+  value: number | null
+  status: 'ok' | 'unknown' | 'stale'
+  source: string
+}
+export interface KpiOverview {
+  generated_at: string
+  hosts_total: KpiItem
+  hosts_secured: KpiItem
+  hosts_deploying: KpiItem
+  active_deployments: KpiItem
+  deployment_success_rate: KpiItem
+  open_vulnerabilities: KpiItem
+  compliance_score: KpiItem
+  agent_coverage: KpiItem
+  disconnected_agents: KpiItem
+  open_critical_vulnerabilities: KpiItem
+  open_high_vulnerabilities: KpiItem
+  patch_coverage: KpiItem
+  reboot_required: KpiItem
+  kernel_exposure_days: KpiItem
+  hardening_drift: KpiItem
+  selinux_non_compliant: KpiItem
+  alerts_by_severity: Record<string, number> | null
+}
+export interface AlertSummary {
+  by_severity: Record<string, number>
+  unacknowledged: Record<string, number>
+  mean_time_to_detect_hours: number | null
+  mean_time_to_respond_hours: number | null
+}
+
 export interface SSHPublicKey {
   public_key: string
   private_key_path: string
@@ -143,12 +194,13 @@ export interface SSHTest {
   fingerprint_changed: boolean
   message: string
 }
+export interface SSHFingerprint { fingerprint: string }
 
 export const api = {
   login: (username: string, password: string) => mutating('/auth/login', 'POST', { username, password }),
   logout: () => mutating('/auth/logout', 'POST'),
-  me: () => request<{ username: string }>('/auth/me'),
-  kpis: () => request<any>('/kpis/overview'),
+  me: () => request<{ id: number; username: string; role: string }>('/auth/me'),
+  kpis: () => request<KpiOverview>('/kpis/overview'),
   kpiHistory: (metric = 'compliance_score') =>
     request<Array<{ value: number | null; status: string; captured_at: string }>>(
       `/kpis/history?metric=${encodeURIComponent(metric)}&days=30`,
@@ -157,6 +209,10 @@ export const api = {
   host: (id: number) => request<Host>(`/hosts/${id}`),
   hostPosture: (id: number) => request<HostPosture>(`/hosts/${id}/posture`),
   ansiblePublicKey: () => request<SSHPublicKey>('/hosts/ssh/public-key'),
+  scanHostFingerprint: (body: { ip: string; ansible_port: number }) =>
+    mutating<SSHFingerprint>('/hosts/ssh/fingerprint', 'POST', body),
+  enrollHost: (body: HostEnrollmentInput & { verified_fingerprint: string }) =>
+    mutating<Host>('/hosts/enroll', 'POST', body),
   testHostSSH: (id: number) => mutating<SSHTest>(`/hosts/${id}/ssh/test`, 'POST'),
   acceptHostSSHFingerprint: (id: number, fingerprint: string) =>
     mutating<SSHTest>(`/hosts/${id}/ssh/accept-fingerprint`, 'POST', { fingerprint }),
@@ -164,7 +220,7 @@ export const api = {
     mutating<Host>('/hosts', 'POST', body),
   importHosts: (hosts: HostImportItem[]) =>
     mutating<HostImportResult>('/hosts/import', 'POST', { hosts }),
-  updateHost: (id: number, body: { ip?: string; security_level?: string; groups?: string[]; status?: string }) =>
+  updateHost: (id: number, body: HostUpdateInput) =>
     mutating<Host>(`/hosts/${id}`, 'PATCH', body),
   deleteHost: (id: number) => mutating<{ message: string }>(`/hosts/${id}`, 'DELETE'),
   playbooks: () => request<Playbook[]>('/playbooks'),
@@ -174,6 +230,8 @@ export const api = {
     mutating<PlaybookDetail>('/playbooks', 'POST', body),
   updatePlaybook: (filename: string, body: { description: string; content: string }) =>
     mutating<PlaybookDetail>(`/playbooks/${encodeURIComponent(filename)}`, 'PUT', body),
+  deletePlaybook: (filename: string) =>
+    mutating<{ message: string }>(`/playbooks/${encodeURIComponent(filename)}`, 'DELETE'),
   deployments: () => request<Deployment[]>('/deployments'),
   deployment: (id: string) => request<Deployment>(`/deployments/${id}`),
   deploymentEvents: (id: string) => request<Array<{ event: string; level: string; message: string; created_at: string }>>(`/deployments/${id}/events`),
@@ -207,6 +265,7 @@ export const api = {
   uyuniSystems: () => request<UyuniSystem[]>('/patching/uyuni'),
   resolvePatch: (id: number) => mutating<PatchFinding>(`/patching/findings/${id}/resolve`, 'POST'),
   alerts: () => request<Alert[]>('/alerts'),
+  alertSummary: () => request<AlertSummary>('/alerts/summary'),
   syncWazuhAlerts: () => mutating<Record<string, unknown>>('/alerts/sync', 'POST'),
   syncAllWazuh: () => mutating<Record<string, unknown>>('/integrations/wazuh/sync', 'POST'),
   acknowledgeAlert: (id: number) => mutating<Alert>(`/alerts/${id}/ack`, 'POST'),
