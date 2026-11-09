@@ -1413,10 +1413,11 @@ function Detection() {
       <PageHeader
         eyebrow="Wazuh"
         title="Détection"
-        description="Alertes de sécurité, acquittement et réponse active sur les agents."
-        actions={<button className="secondary" disabled={sync.isPending} onClick={() => sync.mutate()}><RefreshCw /> Synchroniser</button>}
+        description="Alertes Wazuh, acquittement et réponse active. La synchronisation récupère les agents via l’API Wazuh et les alertes via l’Indexer."
+        actions={<button className="secondary" disabled={sync.isPending} onClick={() => sync.mutate()}><RefreshCw />{sync.isPending ? 'Récupération…' : 'Récupérer depuis Wazuh'}</button>}
       />
       {sync.isError && <div className="alert error">{sync.error instanceof Error ? sync.error.message : 'Synchronisation Wazuh impossible'}</div>}
+      {sync.data && <div className="alert success">Récupération terminée : {sync.data.agents.agents} agent(s), {sync.data.alerts.fetched} alerte(s), {sync.data.vulnerabilities.created + sync.data.vulnerabilities.updated} vulnérabilité(s) actualisée(s).</div>}
       <section className="metrics-grid">
         <StatCard label="Alertes totales" item={{ value: summary.data ? totalBySeverity : null, status: summary.data ? 'ok' : 'unknown' }} icon={Radar} />
         <StatCard label="Non acquittées" item={{ value: unacknowledged, status: summary.data ? 'ok' : 'unknown' }} icon={ShieldAlert} tone="danger" />
@@ -1665,7 +1666,7 @@ function Settings() {
               {state.detail && <p className="integrations-detail">{state.detail}</p>}
               {mutation.isError && <div className="alert error" style={{ marginTop: 12 }}>{mutation.error instanceof Error ? mutation.error.message : 'Test impossible.'}</div>}
               <button className="secondary btn sm" style={{ marginTop: 16 }} disabled={mutation.isPending || (key !== 'ansible' && !state.configured)} onClick={() => mutation.mutate()}>
-                {mutation.isPending ? 'Test…' : key === 'ansible' ? 'Vérifier Ansible' : 'Tester la connexion'}
+                {mutation.isPending ? 'Test…' : key === 'ansible' ? 'Vérifier Ansible' : key === 'wazuh' ? 'Tester l’API Wazuh' : 'Tester la connexion'}
               </button>
             </div>
           </article>

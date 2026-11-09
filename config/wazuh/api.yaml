@@ -1,0 +1,4 @@
+https:
+  enabled: yes
+  key: "server.key"
+  cert: "server.crt"

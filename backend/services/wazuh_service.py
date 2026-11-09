@@ -311,8 +311,9 @@ class WazuhClient:
                 f"Wazuh active-response request failed: {exc}"
             ) from exc
 
-    def test_connection(self) -> None:
-        self.list_agents()
+    def test_connection(self) -> int:
+        """Authenticate to the API and confirm the agents endpoint is usable."""
+        return len(self.list_agents())
 
 
 _client: WazuhClient | None = None

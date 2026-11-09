@@ -96,6 +96,11 @@ export interface PlaybookDetail extends Playbook { content: string; updated_at: 
 export interface PlaybookValidation { valid: boolean; detail: string }
 export interface IntegrationState { configured: boolean; available: boolean | null; reachable: boolean | null; detail: string | null }
 export interface IntegrationStatus { wazuh: IntegrationState; uyuni: IntegrationState; ansible: IntegrationState }
+export interface WazuhSyncResult {
+  agents: { agents: number; hosts: number; matched: number; unmatched: number }
+  alerts: { fetched: number; created: number; updated: number }
+  vulnerabilities: { hosts: number; created: number; updated: number }
+}
 export interface Alert {
   id: number
   alert_id: string
@@ -267,7 +272,7 @@ export const api = {
   alerts: () => request<Alert[]>('/alerts'),
   alertSummary: () => request<AlertSummary>('/alerts/summary'),
   syncWazuhAlerts: () => mutating<Record<string, unknown>>('/alerts/sync', 'POST'),
-  syncAllWazuh: () => mutating<Record<string, unknown>>('/integrations/wazuh/sync', 'POST'),
+  syncAllWazuh: () => mutating<WazuhSyncResult>('/integrations/wazuh/sync', 'POST'),
   acknowledgeAlert: (id: number) => mutating<Alert>(`/alerts/${id}/ack`, 'POST'),
   activeResponse: (id: number, action: 'firewall-drop' | 'disable-account') =>
     mutating<Record<string, unknown>>(`/alerts/${id}/active-response`, 'POST', { action }),

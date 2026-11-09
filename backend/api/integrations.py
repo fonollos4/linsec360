@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 import subprocess
 
@@ -11,6 +12,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..config import get_settings
 from ..db import get_db
+from ..errors import IntegrationNotConfigured, IntegrationUnavailable
 from ..schemas import IntegrationState, IntegrationStatus
 from ..security import get_current_user, require_roles
 from ..services import (
@@ -21,6 +23,7 @@ from ..services import (
 )
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/status", response_model=IntegrationStatus)
@@ -44,13 +47,18 @@ def test_wazuh(
     if not settings.wazuh_configured:
         return IntegrationState(configured=False, reachable=False)
     try:
-        wazuh_service.get_client().test_connection()
-    except Exception:
+        agents = wazuh_service.get_client().test_connection()
+    except (IntegrationNotConfigured, IntegrationUnavailable) as exc:
+        logger.warning("Wazuh API connectivity test failed: %s", exc)
         return IntegrationState(
             configured=True, reachable=False,
-            detail="Le test de connexion Wazuh a échoué.",
+            detail=str(exc)[:300],
         )
-    return IntegrationState(configured=True, reachable=True)
+    return IntegrationState(
+        configured=True,
+        reachable=True,
+        detail=f"API accessible ; {agents} agent(s) Wazuh récupéré(s).",
+    )
 
 
 @router.post("/uyuni/test", response_model=IntegrationState)

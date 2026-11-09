@@ -102,6 +102,9 @@ services:
       API_PASSWORD: ${WAZUH_API_PASSWORD:?Set WAZUH_API_PASSWORD in .env}
     volumes:
       - wazuh_api_configuration:/var/ossec/api/configuration
+      - ./config/wazuh/api.yaml:/var/ossec/api/configuration/api.yaml:ro
+      - ./config/wazuh/indexer_ssl_certs/wazuh.manager.pem:/var/ossec/api/configuration/ssl/server.crt:ro
+      - ./config/wazuh/indexer_ssl_certs/wazuh.manager-key.pem:/var/ossec/api/configuration/ssl/server.key:ro
       - wazuh_etc:/var/ossec/etc
       - wazuh_logs:/var/ossec/logs
       - wazuh_queue:/var/ossec/queue

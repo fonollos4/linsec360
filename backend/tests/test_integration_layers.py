@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from backend import models
 from backend.api import integrations as integrations_api
 from backend.db import session_scope
+from backend.errors import IntegrationUnavailable
 from backend.ratelimit import login_rate_limiter
 from backend.services import uyuni_service, wazuh_service
 
@@ -540,6 +541,64 @@ def test_integrations_report_unconfigured_without_fabricating(
     response = client.get("/api/v1/agents")
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "integration_not_configured"
+
+
+def test_wazuh_connection_test_reports_api_agent_count(
+    client: TestClient, csrf_headers, monkeypatch
+):
+    monkeypatch.setattr(
+        integrations_api,
+        "get_settings",
+        lambda: SimpleNamespace(wazuh_configured=True),
+    )
+
+    class FakeWazuhClient:
+        def test_connection(self):
+            return 3
+
+    monkeypatch.setattr(
+        integrations_api.wazuh_service,
+        "get_client",
+        lambda: FakeWazuhClient(),
+    )
+
+    response = client.post(
+        "/api/v1/integrations/wazuh/test",
+        headers=csrf_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["reachable"] is True
+    assert response.json()["detail"] == "API accessible ; 3 agent(s) Wazuh récupéré(s)."
+
+
+def test_wazuh_connection_test_exposes_safe_failure_detail(
+    client: TestClient, csrf_headers, monkeypatch
+):
+    monkeypatch.setattr(
+        integrations_api,
+        "get_settings",
+        lambda: SimpleNamespace(wazuh_configured=True),
+    )
+
+    class FakeWazuhClient:
+        def test_connection(self):
+            raise IntegrationUnavailable("certificate verification failed")
+
+    monkeypatch.setattr(
+        integrations_api.wazuh_service,
+        "get_client",
+        lambda: FakeWazuhClient(),
+    )
+
+    response = client.post(
+        "/api/v1/integrations/wazuh/test",
+        headers=csrf_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["reachable"] is False
+    assert response.json()["detail"] == "certificate verification failed"
 
 
 def test_ansible_test_checks_only_bounded_version_command(
