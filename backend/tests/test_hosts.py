@@ -310,6 +310,7 @@ def _enrollment_payload(
     ip: str = "10.0.0.50",
     password: str = "temporary-secret",
     fingerprint: str = "SHA256:" + "F" * 43,
+    ansible_user: str = "linsec-ansible",
 ):
     return {
         "name": name,
@@ -317,7 +318,7 @@ def _enrollment_payload(
         "environment": "production",
         "security_level": "high",
         "groups": ["linux"],
-        "ansible_user": "linsec-ansible",
+        "ansible_user": ansible_user,
         "ansible_port": 22,
         "password": password,
         "verified_fingerprint": fingerprint,
@@ -405,6 +406,32 @@ def test_failed_password_authentication_does_not_add_host(
 
     assert response.status_code == 409
     assert "authentication failed" in response.json()["error"]["message"]
+    assert client.get("/api/v1/hosts").json() == []
+
+
+def test_root_password_authentication_recommends_non_root_account(
+    client: TestClient, csrf_headers, monkeypatch
+):
+    fingerprint = "SHA256:" + "M" * 43
+    monkeypatch.setattr(
+        ssh_service,
+        "scan_host_key",
+        lambda ip, port: (f"{ip} ssh-ed25519 AAAA", fingerprint),
+    )
+    monkeypatch.setattr(ssh_service, "test_password_connection", lambda **kwargs: False)
+
+    response = client.post(
+        "https://testserver/api/v1/hosts/enroll",
+        headers=csrf_headers(),
+        json=_enrollment_payload(
+            name="root-enrolled01",
+            ansible_user="root",
+            fingerprint=fingerprint,
+        ),
+    )
+
+    assert response.status_code == 409
+    assert "Root SSH password enrollment was refused" in response.json()["error"]["message"]
     assert client.get("/api/v1/hosts").json() == []
 
 

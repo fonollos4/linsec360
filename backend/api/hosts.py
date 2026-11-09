@@ -134,6 +134,11 @@ def enroll_host(
         password=password,
         known_hosts_entry=known_hosts_entry,
     ):
+        if host_payload.ansible_user == "root":
+            raise ConflictError(
+                "Root SSH password enrollment was refused. Root password login is "
+                "commonly disabled; use a non-root account with sudo privileges."
+            )
         raise ConflictError(
             "SSH authentication failed; host was not added. Check the user and password."
         )
