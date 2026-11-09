@@ -133,13 +133,23 @@ curl http://localhost:8080/ready
 curl http://localhost/
 ```
 
-For production, mount a trusted certificate chain and its private key as
-`config/tls/fullchain.pem` and `config/tls/privkey.pem`, then set
-`LINSEC_ENVIRONMENT=production`, `LINSEC_COOKIE_SECURE=true`, and
-`LINSEC_TLS_ENABLED=true` in `.env`. The Web container terminates HTTPS on
-`LINSEC_HTTPS_PORT`; HTTP is redirected to HTTPS. Production startup fails if
+For testing, generate a self-signed TLS certificate with the hostnames and IPs
+used to access the UI:
+
+```bash
+LINSEC_TLS_HOSTS=linsec.example.org,192.0.2.10 \
+  ./config/scripts/generate-linsec-tls.sh
+```
+
+The script writes `config/tls/fullchain.pem` and `config/tls/privkey.pem`;
+the private key is mode `0600` and both PEM files are excluded from Git. A
+self-signed certificate encrypts traffic but browsers will warn that it is not
+trusted. For public production, replace it with a certificate from a trusted
+CA. Then set `LINSEC_ENVIRONMENT=production`, `LINSEC_COOKIE_SECURE=true`,
+and `LINSEC_TLS_ENABLED=true` in `.env`. The Web container terminates HTTPS on
+`LINSEC_HTTPS_PORT` and redirects HTTP to HTTPS. Production startup fails if
 TLS is enabled without both certificate files, or if production mode has TLS
-disabled. Do not use a self-signed certificate for production.
+disabled.
 
 The Ansible SSH private key is mounted read-only from `LINSEC_SSH_KEY_DIR`
 (default `./.ssh`). To use an existing key later, put it in that host directory
