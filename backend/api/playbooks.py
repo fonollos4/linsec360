@@ -17,6 +17,8 @@ from ..schemas import (
     PlaybookDetail,
     PlaybookOut,
     PlaybookUpdate,
+    PlaybookValidationOut,
+    PlaybookValidationRequest,
 )
 from ..security import get_current_user, require_roles
 from ..services import audit_service, playbook_service
@@ -46,6 +48,15 @@ def _materialize(playbook: models.Playbook) -> None:
         playbook_service.materialize(playbook, get_settings().playbooks_dir)
     except OSError as exc:
         logger.warning("could not materialize %s: %s", playbook.filename, exc)
+
+
+@router.post("/validate", response_model=PlaybookValidationOut)
+def validate_playbook(
+    payload: PlaybookValidationRequest,
+    user: models.User = Depends(require_roles("admin", "operator")),
+) -> PlaybookValidationOut:
+    valid, detail = playbook_service.validate_playbook_content(payload.content)
+    return PlaybookValidationOut(valid=valid, detail=detail)
 
 
 @router.get("", response_model=list[PlaybookOut])

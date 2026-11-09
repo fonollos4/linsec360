@@ -37,6 +37,8 @@ class UserOut(ORMModel):
 
 
 class HostCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     ip: str
     environment: str
@@ -45,6 +47,7 @@ class HostCreate(BaseModel):
     status: Literal["pending", "deploying", "secured", "error", "unknown"] = "pending"
     ansible_user: str = Field(default="linsec-ansible", min_length=1, max_length=64)
     ansible_port: int = Field(default=22, ge=1, le=65535)
+    ssh_fingerprint: str | None = Field(default=None, max_length=64)
 
     @field_validator("name", "environment")
     @classmethod
@@ -69,6 +72,13 @@ class HostCreate(BaseModel):
     def _ansible_user(cls, value: str) -> str:
         if not IDENTIFIER.fullmatch(value):
             raise ValueError("invalid SSH username")
+        return value
+
+    @field_validator("ssh_fingerprint")
+    @classmethod
+    def _ssh_fingerprint(cls, value: str | None) -> str | None:
+        if value is not None and not re.fullmatch(r"SHA256:[A-Za-z0-9+/]{43}", value):
+            raise ValueError("invalid SHA256 SSH fingerprint")
         return value
 
     @field_validator("groups")
@@ -145,6 +155,21 @@ class HostOut(ORMModel):
     last_ssh_test_at: datetime | None = None
 
 
+class HostImportRequest(BaseModel):
+    hosts: list[HostCreate] = Field(min_length=1, max_length=200)
+
+
+class HostImportFailure(BaseModel):
+    row: int
+    name: str
+    detail: str
+
+
+class HostImportOut(BaseModel):
+    imported: list[HostOut]
+    failed: list[HostImportFailure]
+
+
 class SSHPublicKeyOut(BaseModel):
     public_key: str
     private_key_path: str
@@ -156,6 +181,10 @@ class SSHTestOut(BaseModel):
     fingerprint: str | None = None
     fingerprint_changed: bool = False
     message: str
+
+
+class SSHFingerprintApproval(BaseModel):
+    fingerprint: str = Field(pattern=r"^SHA256:[A-Za-z0-9+/]{43}$")
 
 
 class PlaybookCreate(BaseModel):
@@ -174,6 +203,15 @@ class PlaybookCreate(BaseModel):
 class PlaybookUpdate(BaseModel):
     content: str
     description: str | None = None
+
+
+class PlaybookValidationRequest(BaseModel):
+    content: str = Field(max_length=1_000_000)
+
+
+class PlaybookValidationOut(BaseModel):
+    valid: bool
+    detail: str
 
 
 class PlaybookOut(ORMModel):
@@ -508,6 +546,7 @@ class HostPosture(BaseModel):
 
 class IntegrationState(BaseModel):
     configured: bool
+    available: bool | None = None
     reachable: bool | None = None
     detail: str | None = None
 
@@ -515,6 +554,7 @@ class IntegrationState(BaseModel):
 class IntegrationStatus(BaseModel):
     wazuh: IntegrationState
     uyuni: IntegrationState
+    ansible: IntegrationState
 
 
 class AuditOut(ORMModel):

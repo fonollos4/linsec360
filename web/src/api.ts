@@ -37,6 +37,20 @@ export interface Host {
   ssh_error: string | null
   last_ssh_test_at: string | null
 }
+export interface HostImportItem {
+  name: string
+  ip: string
+  environment: string
+  security_level: string
+  groups: string[]
+  ansible_user: string
+  ansible_port: number
+  ssh_fingerprint: string
+}
+export interface HostImportResult {
+  imported: Host[]
+  failed: Array<{ row: number; name: string; detail: string }>
+}
 export interface Deployment {
   id: string
   environment: string
@@ -59,6 +73,10 @@ export interface HostPosture {
   agent: { id: string; name: string; status: string; last_keep_alive: string | null } | null
 }
 export interface Playbook { id: number; filename: string; description: string | null; checksum: string | null; is_allowlisted: boolean }
+export interface PlaybookDetail extends Playbook { content: string; updated_at: string }
+export interface PlaybookValidation { valid: boolean; detail: string }
+export interface IntegrationState { configured: boolean; available: boolean | null; reachable: boolean | null; detail: string | null }
+export interface IntegrationStatus { wazuh: IntegrationState; uyuni: IntegrationState; ansible: IntegrationState }
 export interface Alert {
   id: number
   alert_id: string
@@ -140,13 +158,22 @@ export const api = {
   hostPosture: (id: number) => request<HostPosture>(`/hosts/${id}/posture`),
   ansiblePublicKey: () => request<SSHPublicKey>('/hosts/ssh/public-key'),
   testHostSSH: (id: number) => mutating<SSHTest>(`/hosts/${id}/ssh/test`, 'POST'),
-  acceptHostSSHFingerprint: (id: number) => mutating<SSHTest>(`/hosts/${id}/ssh/accept-fingerprint`, 'POST'),
-  createHost: (body: { name: string; ip: string; environment: string; security_level: string; groups: string[]; ansible_user?: string; ansible_port?: number }) =>
+  acceptHostSSHFingerprint: (id: number, fingerprint: string) =>
+    mutating<SSHTest>(`/hosts/${id}/ssh/accept-fingerprint`, 'POST', { fingerprint }),
+  createHost: (body: { name: string; ip: string; environment: string; security_level: string; groups: string[]; ansible_user?: string; ansible_port?: number; ssh_fingerprint?: string }) =>
     mutating<Host>('/hosts', 'POST', body),
+  importHosts: (hosts: HostImportItem[]) =>
+    mutating<HostImportResult>('/hosts/import', 'POST', { hosts }),
   updateHost: (id: number, body: { ip?: string; security_level?: string; groups?: string[]; status?: string }) =>
     mutating<Host>(`/hosts/${id}`, 'PATCH', body),
   deleteHost: (id: number) => mutating<{ message: string }>(`/hosts/${id}`, 'DELETE'),
   playbooks: () => request<Playbook[]>('/playbooks'),
+  playbook: (filename: string) => request<PlaybookDetail>(`/playbooks/${encodeURIComponent(filename)}`),
+  validatePlaybook: (content: string) => mutating<PlaybookValidation>('/playbooks/validate', 'POST', { content }),
+  createPlaybook: (body: { filename: string; description: string; content: string }) =>
+    mutating<PlaybookDetail>('/playbooks', 'POST', body),
+  updatePlaybook: (filename: string, body: { description: string; content: string }) =>
+    mutating<PlaybookDetail>(`/playbooks/${encodeURIComponent(filename)}`, 'PUT', body),
   deployments: () => request<Deployment[]>('/deployments'),
   deployment: (id: string) => request<Deployment>(`/deployments/${id}`),
   deploymentEvents: (id: string) => request<Array<{ event: string; level: string; message: string; created_at: string }>>(`/deployments/${id}/events`),
@@ -186,11 +213,7 @@ export const api = {
   activeResponse: (id: number, action: 'firewall-drop' | 'disable-account') =>
     mutating<Record<string, unknown>>(`/alerts/${id}/active-response`, 'POST', { action }),
   audit: () => request<AuditRecord[]>('/audit?limit=100'),
-  integrations: async () => {
-    const status = await request<{ wazuh: { configured: boolean; reachable?: boolean }; uyuni: { configured: boolean; reachable?: boolean } }>('/integrations/status')
-    return [
-      { integration: 'Wazuh', configured: status.wazuh.configured, reachable: 'Inconnue' },
-      { integration: 'Uyuni', configured: status.uyuni.configured, reachable: 'Inconnue' },
-    ]
-  },
+  integrations: () => request<IntegrationStatus>('/integrations/status'),
+  testIntegration: (name: 'wazuh' | 'uyuni' | 'ansible') =>
+    mutating<IntegrationState>(`/integrations/${name}/test`, 'POST'),
 }

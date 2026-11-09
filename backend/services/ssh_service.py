@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import os
 import subprocess
@@ -59,7 +60,7 @@ def public_key() -> str:
         raise IntegrationUnavailable("unable to provision the Ansible SSH key") from exc
 
 
-def scan_fingerprint(ip: str, port: int) -> str | None:
+def scan_host_key(ip: str, port: int) -> tuple[str, str] | None:
     try:
         result = subprocess.run(
             ["ssh-keyscan", "-T", "5", "-p", str(port), "-t", "ed25519,rsa", ip],
@@ -77,11 +78,20 @@ def scan_fingerprint(ip: str, port: int) -> str | None:
         parts = line.split()
         if len(parts) < 3:
             continue
-        encoded = parts[2].encode("ascii")
-        blob = base64.b64decode(encoded, validate=True)
+        try:
+            encoded = parts[2].encode("ascii")
+            blob = base64.b64decode(encoded, validate=True)
+        except (UnicodeEncodeError, ValueError, binascii.Error):
+            continue
         digest = base64.b64encode(hashlib.sha256(blob).digest()).decode("ascii").rstrip("=")
-        return f"SHA256:{digest}"
+        host = ip if port == 22 else f"[{ip}]:{port}"
+        return f"{host} {parts[1]} {parts[2]}", f"SHA256:{digest}"
     return None
+
+
+def scan_fingerprint(ip: str, port: int) -> str | None:
+    scanned = scan_host_key(ip, port)
+    return scanned[1] if scanned else None
 
 
 def test_connection(
@@ -90,33 +100,45 @@ def test_connection(
     ip: str,
     ansible_user: str,
     ansible_port: int,
+    known_hosts_entry: str,
 ) -> tuple[bool, str, str]:
     private_key, _ = ensure_keypair()
-    inventory = {
-        "all": {
-            "hosts": {
-                host_name: {
-                    "ansible_host": ip,
-                    "ansible_user": ansible_user,
-                    "ansible_port": ansible_port,
-                    "ansible_private_key_file": str(private_key),
+    known_hosts_path: Path | None = None
+    inventory_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", suffix=".known_hosts", delete=False
+        ) as known_hosts_handle:
+            known_hosts_handle.write(known_hosts_entry + "\n")
+            known_hosts_path = Path(known_hosts_handle.name)
+        os.chmod(known_hosts_path, 0o600)
+
+        inventory = {
+            "all": {
+                "hosts": {
+                    host_name: {
+                        "ansible_host": ip,
+                        "ansible_user": ansible_user,
+                        "ansible_port": ansible_port,
+                        "ansible_private_key_file": str(private_key),
+                    }
                 }
             }
         }
-    }
-    with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", suffix=".yml", delete=False
-    ) as handle:
-        yaml.safe_dump(inventory, handle, sort_keys=False)
-        inventory_path = Path(handle.name)
-    os.chmod(inventory_path, 0o600)
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", suffix=".yml", delete=False
+        ) as handle:
+            yaml.safe_dump(inventory, handle, sort_keys=False)
+            inventory_path = Path(handle.name)
+        os.chmod(inventory_path, 0o600)
 
-    try:
         environment = os.environ.copy()
-        # Fingerprints are detected and persisted separately before each test.
-        # This keeps first enrollment usable while mismatches are blocked by
-        # the host SSH workflow above.
-        environment["ANSIBLE_HOST_KEY_CHECKING"] = "false"
+        environment["ANSIBLE_HOST_KEY_CHECKING"] = "true"
+        environment["ANSIBLE_SSH_ARGS"] = (
+            f"-o UserKnownHostsFile={known_hosts_path} "
+            "-o GlobalKnownHostsFile=/dev/null "
+            "-o StrictHostKeyChecking=yes"
+        )
         environment["ANSIBLE_TIMEOUT"] = "10"
         result = subprocess.run(
             [
@@ -139,4 +161,7 @@ def test_connection(
     except (OSError, subprocess.SubprocessError) as exc:
         return False, str(exc), "SSH connection failed"
     finally:
-        inventory_path.unlink(missing_ok=True)
+        if inventory_path is not None:
+            inventory_path.unlink(missing_ok=True)
+        if known_hosts_path is not None:
+            known_hosts_path.unlink(missing_ok=True)

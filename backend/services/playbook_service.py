@@ -30,6 +30,17 @@ def _validate_yaml(content: str) -> None:
         raise ValueError("an Ansible playbook must be a YAML list of plays")
 
 
+def validate_playbook_content(content: str) -> tuple[bool, str]:
+    """Validate YAML syntax and the basic Ansible playbook list shape."""
+    try:
+        _validate_yaml(content)
+    except ValueError as exc:
+        return False, str(exc)
+    if not content.strip():
+        return True, "YAML valide; le document est vide et ne contient aucun play."
+    return True, "YAML valide et structure de playbook (liste) reconnue."
+
+
 def _checksum(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 

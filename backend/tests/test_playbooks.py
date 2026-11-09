@@ -62,6 +62,45 @@ def test_playbook_non_list_yaml_is_rejected(client: TestClient, csrf_headers):
     assert response.status_code == 400
 
 
+def test_playbook_validation_reports_yaml_and_structure(client: TestClient, csrf_headers):
+    headers = csrf_headers()
+    valid = client.post(
+        "/api/v1/playbooks/validate",
+        headers=headers,
+        json={"content": "- name: Ping\n  hosts: all\n  tasks: []\n"},
+    )
+    assert valid.status_code == 200
+    assert valid.json()["valid"] is True
+    assert "liste" in valid.json()["detail"]
+
+    invalid_yaml = client.post(
+        "/api/v1/playbooks/validate",
+        headers=headers,
+        json={"content": "- name: [\n"},
+    )
+    assert invalid_yaml.status_code == 200
+    assert invalid_yaml.json()["valid"] is False
+    assert "invalid YAML" in invalid_yaml.json()["detail"]
+
+    invalid_shape = client.post(
+        "/api/v1/playbooks/validate",
+        headers=headers,
+        json={"content": "name: not-a-list\n"},
+    )
+    assert invalid_shape.status_code == 200
+    assert invalid_shape.json()["valid"] is False
+    assert "YAML list" in invalid_shape.json()["detail"]
+
+
+def test_viewer_cannot_validate_playbook(client: TestClient, csrf_headers):
+    response = client.post(
+        "/api/v1/playbooks/validate",
+        headers=csrf_headers("viewer", "viewer-test-password-123"),
+        json={"content": "- name: Check\n  hosts: all\n"},
+    )
+    assert response.status_code == 403
+
+
 def test_viewer_cannot_create_playbook(client: TestClient, csrf_headers):
     headers = csrf_headers("viewer", "viewer-test-password-123")
     response = create_playbook(client, headers, filename="viewer.yml")

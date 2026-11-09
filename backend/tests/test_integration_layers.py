@@ -10,6 +10,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from backend import models
+from backend.api import integrations as integrations_api
 from backend.db import session_scope
 from backend.ratelimit import login_rate_limiter
 from backend.services import uyuni_service, wazuh_service
@@ -514,13 +515,54 @@ def test_uyuni_sync_normalizes_systems_and_errata(client: TestClient, csrf_heade
     assert response.json()[0]["uyuni_system_id"] == 42
 
 
-def test_integrations_report_unconfigured_without_fabricating(client: TestClient, login):
+def test_integrations_report_unconfigured_without_fabricating(
+    client: TestClient, login, monkeypatch
+):
+    monkeypatch.setattr(
+        integrations_api,
+        "get_settings",
+        lambda: SimpleNamespace(
+            wazuh_configured=False,
+            uyuni_configured=False,
+            ansible_playbook_bin="ansible-playbook",
+        ),
+    )
     login()
     response = client.get("/api/v1/integrations/status")
     assert response.status_code == 200
     assert response.json()["wazuh"]["configured"] is False
     assert response.json()["uyuni"]["configured"] is False
+    assert response.json()["wazuh"]["reachable"] is None
+    assert response.json()["uyuni"]["reachable"] is None
+    assert response.json()["ansible"]["configured"] is True
+    assert isinstance(response.json()["ansible"]["available"], bool)
 
     response = client.get("/api/v1/agents")
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "integration_not_configured"
+
+
+def test_ansible_test_checks_only_bounded_version_command(
+    client: TestClient, csrf_headers, monkeypatch
+):
+    commands: list[tuple[list[str], int]] = []
+    monkeypatch.setattr(integrations_api.shutil, "which", lambda binary: "/usr/bin/ansible-playbook")
+
+    def fake_run(command, **kwargs):
+        commands.append((command, kwargs["timeout"]))
+        return SimpleNamespace(returncode=0, stdout="ansible-playbook [core 2.17.0]\n")
+
+    monkeypatch.setattr(integrations_api.subprocess, "run", fake_run)
+    response = client.post("/api/v1/integrations/ansible/test", headers=csrf_headers())
+    assert response.status_code == 200
+    assert response.json()["configured"] is True
+    assert response.json()["available"] is True
+    assert response.json()["reachable"] is True
+    assert "2.17.0" in response.json()["detail"]
+    assert commands == [(["/usr/bin/ansible-playbook", "--version"], 3)]
+
+    viewer = client.post(
+        "/api/v1/integrations/ansible/test",
+        headers=csrf_headers("viewer", "viewer-test-password-123"),
+    )
+    assert viewer.status_code == 403

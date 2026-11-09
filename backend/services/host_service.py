@@ -129,6 +129,7 @@ def create_host(
         groups=_get_or_create_groups(db, payload.groups),
         ansible_user=payload.ansible_user,
         ansible_port=payload.ansible_port,
+        ssh_fingerprint=payload.ssh_fingerprint,
     )
     db.add(host)
     audit_service.record(

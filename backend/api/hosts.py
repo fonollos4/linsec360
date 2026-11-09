@@ -15,11 +15,14 @@ from ..schemas import (
     AgentOut,
     HardeningCheckOut,
     HostCreate,
+    HostImportOut,
+    HostImportRequest,
     HostOut,
     HostPosture,
     HostUpdate,
     Message,
     PatchFindingOut,
+    SSHFingerprintApproval,
     SSHPublicKeyOut,
     SSHTestOut,
 )
@@ -78,6 +81,29 @@ def create_host(
 ) -> HostOut:
     host = host_service.create_host(db, payload=payload, actor=user, request=request)
     return host_service.serialize(host)
+
+
+@router.post("/import", response_model=HostImportOut)
+def import_hosts(
+    payload: HostImportRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(require_roles("admin", "operator")),
+) -> HostImportOut:
+    imported: list[HostOut] = []
+    failed = []
+    for row, host_payload in enumerate(payload.hosts, start=2):
+        try:
+            host = host_service.create_host(
+                db, payload=host_payload, actor=user, request=request
+            )
+        except ConflictError as exc:
+            failed.append(
+                {"row": row, "name": host_payload.name, "detail": exc.message}
+            )
+        else:
+            imported.append(host_service.serialize(host))
+    return HostImportOut(imported=imported, failed=failed)
 
 
 @router.get("/{host_id}", response_model=HostOut)
@@ -146,16 +172,22 @@ def update_host(
 @router.post("/{host_id}/ssh/accept-fingerprint", response_model=SSHTestOut)
 def accept_host_ssh_fingerprint(
     host_id: int,
+    payload: SSHFingerprintApproval,
     request: Request,
     db: Session = Depends(get_db),
     user: models.User = Depends(require_roles("admin")),
 ) -> SSHTestOut:
     host = host_service.get_host(db, host_id)
-    fingerprint = ssh_service.scan_fingerprint(host.ip, host.ansible_port)
-    if fingerprint is None:
+    scanned = ssh_service.scan_host_key(host.ip, host.ansible_port)
+    if scanned is None:
         raise ConflictError("unable to determine the SSH host fingerprint")
+    _, current_fingerprint = scanned
+    if current_fingerprint != payload.fingerprint:
+        raise ConflictError(
+            "live SSH fingerprint differs from the out-of-band verified fingerprint"
+        )
     previous = host.ssh_fingerprint
-    host.ssh_fingerprint = fingerprint
+    host.ssh_fingerprint = payload.fingerprint
     host.ssh_status = "pending"
     host.ssh_error = None
     db.commit()
@@ -168,16 +200,16 @@ def accept_host_ssh_fingerprint(
         action="host.ssh_fingerprint_accept",
         target_type="host",
         target_id=host.id,
-        data={"previous": previous, "accepted": fingerprint},
+        data={"previous": previous, "accepted": payload.fingerprint},
         request=request,
     )
     db.commit()
     return SSHTestOut(
         reachable=False,
         ssh_status="pending",
-        fingerprint=fingerprint,
+        fingerprint=payload.fingerprint,
         fingerprint_changed=False,
-        message="Fingerprint accepted; run the SSH connection test again",
+        message="Verified SSH fingerprint saved; run the SSH connection test again",
     )
 
 
@@ -189,11 +221,50 @@ def test_host_ssh(
     user: models.User = Depends(require_roles("admin", "operator")),
 ) -> SSHTestOut:
     host = host_service.get_host(db, host_id)
-    fingerprint = ssh_service.scan_fingerprint(host.ip, host.ansible_port)
+    scanned = ssh_service.scan_host_key(host.ip, host.ansible_port)
+    if scanned is None:
+        host.ssh_status = "failed"
+        host.ssh_error = "Unable to scan SSH fingerprint; connection was not attempted"
+        host.last_ssh_test_at = datetime.now(UTC)
+        db.commit()
+        db.refresh(host)
+        return SSHTestOut(
+            reachable=False,
+            ssh_status=host.ssh_status,
+            fingerprint=None,
+            message=host.ssh_error,
+        )
+    known_hosts_entry, fingerprint = scanned
+    if host.ssh_fingerprint is None:
+        host.ssh_status = "fingerprint_pending"
+        host.ssh_error = None
+        host.last_ssh_test_at = datetime.now(UTC)
+        db.commit()
+        db.refresh(host)
+        from ..services import audit_service
+
+        audit_service.record(
+            db,
+            actor=user,
+            action="host.ssh_fingerprint_discovered",
+            target_type="host",
+            target_id=host.id,
+            data={"fingerprint": fingerprint},
+            request=request,
+        )
+        db.commit()
+        return SSHTestOut(
+            reachable=False,
+            ssh_status=host.ssh_status,
+            fingerprint=fingerprint,
+            fingerprint_changed=False,
+            message=(
+                "Fingerprint discovered; compare it with a trusted source, "
+                "then approve the exact value"
+            ),
+        )
     changed = bool(
-        host.ssh_fingerprint
-        and fingerprint
-        and host.ssh_fingerprint != fingerprint
+        host.ssh_fingerprint != fingerprint
     )
     if changed:
         host.ssh_status = "fingerprint_changed"
@@ -226,6 +297,7 @@ def test_host_ssh(
         ip=host.ip,
         ansible_user=host.ansible_user,
         ansible_port=host.ansible_port,
+        known_hosts_entry=known_hosts_entry,
     )
     host.last_ssh_test_at = datetime.now(UTC)
     host.ssh_status = "reachable" if reachable else "failed"

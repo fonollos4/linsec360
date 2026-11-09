@@ -110,6 +110,10 @@ Uyuni exposes HTTP on `UYUNI_HTTP_PORT` (default `8081`) and HTTPS on
 `UYUNI_HTTPS_PORT` (default `8443`). LinSec360 connects to the XML-RPC endpoint
 internally at `http://uyuni/rpc/api`; use the **Paramètres > Intégrations**
 test before synchronizing patch data from **Correctifs**.
+Open the Uyuni interface directly at `https://localhost:8443` (or the configured
+HTTPS port). On first access, create the organization and administrator; use
+`admin` and the value of `UYUNI_ADMIN_PASSWORD` in `.env` to match LinSec360's
+integration credentials.
 
 Uyuni is initialized once and may take several minutes on its first start. Wait
 for both containers to become healthy:

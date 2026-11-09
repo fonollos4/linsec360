@@ -361,6 +361,7 @@ services:
       - uyuni-cache-v3:/var/cache
       - uyuni-spacewalk-v3:/srv/www/htdocs
       - uyuni-postgresql-v3:/var/lib/pgsql:ro
+      - ./config/uyuni/enable-https.sh:/docker-entrypoint-init.d/99-uyuni-enable-https.sh:ro
     depends_on:
       uyuni-db:
         condition: service_healthy
