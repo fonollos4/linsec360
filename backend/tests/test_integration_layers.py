@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import xmlrpc.client
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 from backend import models
@@ -43,6 +45,23 @@ XCCDF_RESULT = """<?xml version="1.0" encoding="UTF-8"?>
   </TestResult>
 </Benchmark>
 """
+
+
+def test_wazuh_agent_playbook_defaults_are_not_recursive():
+    playbook_path = (
+        Path(__file__).resolve().parents[2]
+        / "taskengine"
+        / "playbooks"
+        / "wazuh-agent.yml"
+    )
+    play = yaml.safe_load(playbook_path.read_text(encoding="utf-8"))[0]
+
+    assert play["vars"]["wazuh_manager_address"] == (
+        "{{ linsec_wazuh_manager_address | default('', true) }}"
+    )
+    assert play["vars"]["wazuh_agent_groups"] == (
+        "{{ linsec_wazuh_agent_groups | default('linsec', true) }}"
+    )
 
 
 def _post_scan(client: TestClient, headers: dict[str, str], host_name: str = "web01"):
