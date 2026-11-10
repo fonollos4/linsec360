@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import xmlrpc.client
 from datetime import UTC, datetime
 from pathlib import Path
@@ -80,6 +81,7 @@ def test_openscap_playbook_discovers_a_distribution_specific_data_stream():
     play = yaml.safe_load(playbook_path.read_text(encoding="utf-8"))[0]
     tasks = play["tasks"]
 
+    assert "openscap_profile" not in play["vars"]["openscap_profile"]
     assert any("ansible.builtin.find" in task for task in tasks)
     assert any(
         task.get("name") == "Validate that a matching SCAP data stream was installed"
@@ -92,6 +94,30 @@ def test_openscap_playbook_discovers_a_distribution_specific_data_stream():
     )
     assert "{{ openscap_ssg_datastream }}" in scan_task["ansible.builtin.command"]
     assert "ssg-rhel9-ds.xml" not in repr(play)
+
+
+def test_bundled_playbook_vars_do_not_reference_themselves():
+    """A play var defined in terms of itself recurses until Ansible gives up.
+
+    Extra vars already outrank play vars, so overridable defaults must not use
+    ``{{ name | default(...) }}``.
+    """
+    playbook_dir = (
+        Path(__file__).resolve().parents[2] / "taskengine" / "playbooks"
+    )
+    offenders = []
+    for path in sorted(playbook_dir.glob("*.yml")):
+        documents = yaml.safe_load(path.read_text(encoding="utf-8")) or []
+        for play in documents:
+            if not isinstance(play, dict):
+                continue
+            for name, value in (play.get("vars") or {}).items():
+                if not isinstance(value, str):
+                    continue
+                if re.search(r"\{\{[^}]*\b" + re.escape(name) + r"\b", value):
+                    offenders.append(f"{path.name}: vars.{name} = {value!r}")
+
+    assert not offenders, "self-referential play vars: " + ", ".join(offenders)
 
 
 def _post_scan(client: TestClient, headers: dict[str, str], host_name: str = "web01"):

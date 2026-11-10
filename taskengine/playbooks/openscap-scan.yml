@@ -15,7 +15,9 @@
   vars:
     openscap_config_dir: "{{ linsec_config_dir | default(playbook_dir ~ '/../../config') }}"
     openscap_artifact_dir: "{{ linsec_artifact_dir | default(playbook_dir ~ '/../../artifacts') }}"
-    openscap_profile: "{{ openscap_profile | default('cis_rhel.xml' if ansible_os_family == 'RedHat' else 'cis_ubuntu.xml') }}"
+    # Extra vars (the UI profile selector) override play vars, so this must
+    # never reference openscap_profile itself: that would recurse forever.
+    openscap_profile: "{{ 'cis_rhel.xml' if ansible_os_family == 'RedHat' else 'cis_ubuntu.xml' }}"
     openscap_backend: ssg
     openscap_tailoring_file: "{{ openscap_config_dir }}/openscap/profiles/{{ openscap_profile }}"
     openscap_profile_id: >-

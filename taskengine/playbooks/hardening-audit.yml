@@ -8,8 +8,9 @@
 
   vars:
     hardening_apply: false
-    linsec_config_dir: "{{ linsec_config_dir | default(playbook_dir ~ '/../../config') }}"
-    linsec_artifact_dir: "{{ linsec_artifact_dir | default(playbook_dir ~ '/../../artifacts') }}"
+    # Overridable via extra vars; do not self-reference here (recursion).
+    linsec_config_dir: "{{ playbook_dir ~ '/../../config' }}"
+    linsec_artifact_dir: "{{ playbook_dir ~ '/../../artifacts' }}"
 
   roles:
     - role: hardening

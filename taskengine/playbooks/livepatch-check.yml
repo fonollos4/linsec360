@@ -8,7 +8,8 @@
   gather_facts: true
 
   vars:
-    linsec_config_dir: "{{ linsec_config_dir | default(playbook_dir ~ '/../../config') }}"
+    # Overridable via extra vars; do not self-reference here (recursion).
+    linsec_config_dir: "{{ playbook_dir ~ '/../../config' }}"
     livepatch_ingest_url: ""
     livepatch_api_token: ""
 

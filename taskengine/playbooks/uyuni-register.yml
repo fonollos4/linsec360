@@ -15,12 +15,20 @@
   gather_facts: true
 
   vars:
-    uyuni_server: "{{ uyuni_server | mandatory }}"
     uyuni_bootstrap_url: "https://{{ uyuni_server }}/pub/bootstrap/bootstrap.sh"
     uyuni_activation_key: ""
     uyuni_bootstrap_script: /var/tmp/linsec-uyuni-bootstrap.sh
 
   tasks:
+    - name: Validate that the Uyuni server was provided
+      ansible.builtin.assert:
+        that:
+          - uyuni_server is defined
+          - uyuni_server | length > 0
+        fail_msg: >-
+          uyuni_server is required; pass -e uyuni_server=<hostname> or set it
+          in the deployment extra vars.
+
     - name: Download the Uyuni bootstrap script
       ansible.builtin.get_url:
         url: "{{ uyuni_bootstrap_url }}"
