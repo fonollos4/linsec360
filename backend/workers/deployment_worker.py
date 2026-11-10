@@ -21,6 +21,7 @@ from ..services import (
     credential_service,
     inventory_service,
     playbook_service,
+    runtime_configuration_service,
     ssh_service,
 )
 
@@ -203,8 +204,8 @@ def _append_log(log_path: Path, text: str) -> None:
 
 def run_deployment(deployment_id: str) -> None:
     """Execute a queued deployment. Safe to call from a thread or RQ worker."""
-    settings = get_settings()
     with session_scope() as db:
+        settings = runtime_configuration_service.effective_settings(db)
         deployment = db.get(models.Deployment, deployment_id)
         if deployment is None:
             logger.error("deployment %s not found", deployment_id)
@@ -289,6 +290,12 @@ def run_deployment(deployment_id: str) -> None:
                     "linsec_artifact_dir": str(settings.artifacts_dir),
                     "linsec_wazuh_manager_address": (
                         settings.effective_wazuh_manager_address
+                    ),
+                    "linsec_wazuh_manager_agent_port": (
+                        settings.wazuh_manager_agent_port
+                    ),
+                    "linsec_wazuh_manager_enrollment_port": (
+                        settings.wazuh_manager_enrollment_port
                     ),
                     **deployment.extra_vars,
                 },

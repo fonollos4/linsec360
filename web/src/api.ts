@@ -96,6 +96,15 @@ export interface Playbook { id: number; filename: string; description: string | 
 export interface PlaybookDetail extends Playbook { content: string; updated_at: string }
 export interface PlaybookValidation { valid: boolean; detail: string }
 export interface IntegrationState { configured: boolean; available: boolean | null; reachable: boolean | null; detail: string | null }
+export interface StackConfiguration {
+  wazuh_manager_address: string
+  wazuh_manager_agent_port: number
+  wazuh_manager_enrollment_port: number
+  wazuh_api_url: string
+  wazuh_indexer_url: string
+  wazuh_dashboard_url: string
+  uyuni_api_url: string
+}
 export interface StackComponentState {
   key: string
   name: string
@@ -223,6 +232,8 @@ export interface SSHFingerprint { fingerprint: string }
 export const api = {
   login: (username: string, password: string) => mutating('/auth/login', 'POST', { username, password }),
   logout: () => mutating('/auth/logout', 'POST'),
+  changePassword: (body: { current_password: string; new_password: string }) =>
+    mutating<{ message: string }>('/auth/password', 'PUT', body),
   me: () => request<{ id: number; username: string; role: string }>('/auth/me'),
   kpis: () => request<KpiOverview>('/kpis/overview'),
   kpiHistory: (metric = 'compliance_score') =>
@@ -303,6 +314,11 @@ export const api = {
     mutating<Record<string, unknown>>(`/alerts/${id}/active-response`, 'POST', { action }),
   audit: () => request<AuditRecord[]>('/audit?limit=100'),
   integrations: () => request<IntegrationStatus>('/integrations/status'),
+  stackConfiguration: () => request<StackConfiguration>('/integrations/config'),
+  updateStackConfiguration: (body: StackConfiguration) =>
+    mutating<StackConfiguration>('/integrations/config', 'PUT', body),
+  resetStackConfiguration: () =>
+    mutating<StackConfiguration>('/integrations/config', 'DELETE'),
   testIntegration: (name: 'wazuh' | 'uyuni' | 'ansible') =>
     mutating<IntegrationState>(`/integrations/${name}/test`, 'POST'),
 }

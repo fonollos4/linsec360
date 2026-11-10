@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..config import Settings, get_settings
 from ..errors import IntegrationNotConfigured, IntegrationUnavailable
+from .runtime_configuration_service import effective_settings
 
 logger = logging.getLogger(__name__)
 
@@ -178,10 +179,12 @@ class UyuniClient:
 _client: UyuniClient | None = None
 
 
-def get_client() -> UyuniClient:
+def get_client(settings: Settings | None = None) -> UyuniClient:
     global _client
+    if settings is not None and settings is not get_settings():
+        return UyuniClient(settings)
     if _client is None:
-        _client = UyuniClient()
+        _client = UyuniClient(settings)
     return _client
 
 
@@ -191,7 +194,7 @@ def set_client(client: UyuniClient | None) -> None:
 
 
 def sync_systems(db: Session, client: UyuniClient | None = None) -> dict:
-    client = client or get_client()
+    client = client or get_client(effective_settings(db))
     systems = client.list_systems()
     hosts = {host.name: host for host in db.query(models.Host).all()}
     created = updated = 0
@@ -226,7 +229,7 @@ def sync_systems(db: Session, client: UyuniClient | None = None) -> dict:
 
 
 def sync_patch_findings(db: Session, client: UyuniClient | None = None) -> dict:
-    client = client or get_client()
+    client = client or get_client(effective_settings(db))
     systems = db.query(models.UyuniSystem).all()
     created = updated = 0
     for system in systems:

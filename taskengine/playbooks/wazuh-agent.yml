@@ -16,9 +16,11 @@
   vars:
     wazuh_manager_address: "{{ linsec_wazuh_manager_address | default('', true) }}"
     wazuh_agent_groups: "{{ linsec_wazuh_agent_groups | default('default', true) }}"
+    wazuh_manager_agent_port: "{{ linsec_wazuh_manager_agent_port | default(1514) }}"
+    wazuh_manager_enrollment_port: "{{ linsec_wazuh_manager_enrollment_port | default(1515) }}"
     wazuh_managers:
       - address: "{{ wazuh_manager_address }}"
-        port: 1514
+        port: "{{ wazuh_manager_agent_port }}"
         protocol: tcp
         api_port: 55000
         api_proto: https
@@ -29,7 +31,7 @@
     wazuh_agent_enrollment:
       enabled: "yes"
       manager_address: "{{ wazuh_manager_address }}"
-      port: 1515
+      port: "{{ wazuh_manager_enrollment_port }}"
       agent_name: "{{ inventory_hostname }}"
       groups: "{{ wazuh_agent_groups }}"
       agent_address: "{{ ansible_default_ipv4.address | default('') }}"

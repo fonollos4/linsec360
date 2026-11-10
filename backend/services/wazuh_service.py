@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..config import Settings, get_settings
 from ..errors import IntegrationNotConfigured, IntegrationUnavailable
+from .runtime_configuration_service import effective_settings
 
 logger = logging.getLogger(__name__)
 
@@ -231,7 +232,10 @@ class WazuhClient:
         return [normalize_agent(item) for item in items if item.get("id")]
 
     def list_vulnerabilities(self, agent_id: str) -> list[dict]:
-        payload = self._get(f"/vulnerability/{agent_id}", {"limit": 1000})
+        payload = self._get(
+            f"/vulnerability/{agent_id}/inventory",
+            {"limit": 1000},
+        )
         items = (payload.get("data") or {}).get("affected_items") or []
         return [normalize_vulnerability(item) for item in items]
 
@@ -319,10 +323,12 @@ class WazuhClient:
 _client: WazuhClient | None = None
 
 
-def get_client() -> WazuhClient:
+def get_client(settings: Settings | None = None) -> WazuhClient:
     global _client
+    if settings is not None and settings is not get_settings():
+        return WazuhClient(settings)
     if _client is None:
-        _client = WazuhClient()
+        _client = WazuhClient(settings)
     return _client
 
 
@@ -333,7 +339,7 @@ def set_client(client: WazuhClient | None) -> None:
 
 
 def sync_agents(db: Session, client: WazuhClient | None = None) -> dict:
-    client = client or get_client()
+    client = client or get_client(effective_settings(db))
     agents = client.list_agents()
     hosts = db.query(models.Host).all()
     by_name = {host.name: host for host in hosts}
@@ -359,7 +365,7 @@ def sync_agents(db: Session, client: WazuhClient | None = None) -> dict:
 def sync_alerts(
     db: Session, *, client: WazuhClient | None = None, limit: int = 500
 ) -> dict:
-    client = client or get_client()
+    client = client or get_client(effective_settings(db))
     alerts = client.search_alerts(limit=limit)
     created = updated = 0
     for alert in alerts:
@@ -396,7 +402,7 @@ def sync_vulnerabilities(
     client: WazuhClient | None = None,
     host_names: list[str] | None = None,
 ) -> dict:
-    client = client or get_client()
+    client = client or get_client(effective_settings(db))
     query = db.query(models.Host).filter(models.Host.agent_id.is_not(None))
     if host_names:
         query = query.filter(models.Host.name.in_(host_names))

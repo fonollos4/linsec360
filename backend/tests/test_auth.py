@@ -85,6 +85,59 @@ def test_logout_revokes_session(client: TestClient, login):
     assert "linsec_csrf" not in client.cookies
 
 
+def test_password_can_be_changed_with_current_password(client: TestClient, login):
+    csrf = login()
+    response = client.put(
+        "/api/v1/auth/password",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "current_password": "admin-test-password-123",
+            "new_password": "new-strong-password-123",
+        },
+    )
+    assert response.status_code == 200
+    assert client.get("/api/v1/auth/me").status_code == 200
+    assert (
+        client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": "admin-test-password-123"},
+        ).status_code
+        == 401
+    )
+    assert (
+        client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": "new-strong-password-123"},
+        ).status_code
+        == 200
+    )
+
+
+def test_password_change_requires_current_password(client: TestClient, login):
+    csrf = login()
+    response = client.put(
+        "/api/v1/auth/password",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "current_password": "wrong-password",
+            "new_password": "new-strong-password-123",
+        },
+    )
+    assert response.status_code == 400
+
+
+def test_password_change_requires_csrf(client: TestClient, login):
+    login()
+    response = client.put(
+        "/api/v1/auth/password",
+        json={
+            "current_password": "admin-test-password-123",
+            "new_password": "new-strong-password-123",
+        },
+    )
+    assert response.status_code == 403
+
+
 def test_viewer_cannot_mutate(client: TestClient, csrf_headers):
     headers = csrf_headers("viewer", "viewer-test-password-123")
     response = client.post(

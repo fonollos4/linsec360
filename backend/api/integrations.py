@@ -13,11 +13,17 @@ from .. import models
 from ..config import get_settings
 from ..db import get_db
 from ..errors import IntegrationNotConfigured, IntegrationUnavailable
-from ..schemas import IntegrationState, IntegrationStatus
+from ..schemas import (
+    IntegrationState,
+    IntegrationStatus,
+    StackConfiguration,
+    StackConfigurationUpdate,
+)
 from ..security import get_current_user, require_roles
 from ..services import (
     audit_service,
     kpi_service,
+    runtime_configuration_service,
     stack_service,
     uyuni_service,
     wazuh_service,
@@ -28,8 +34,11 @@ logger = logging.getLogger(__name__)
 
 
 @router.get("/status", response_model=IntegrationStatus)
-def status(user: models.User = Depends(get_current_user)) -> IntegrationStatus:
-    settings = get_settings()
+def status(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+) -> IntegrationStatus:
+    settings = runtime_configuration_service.effective_settings(db, get_settings())
     wazuh = IntegrationState(configured=settings.wazuh_configured)
     uyuni = IntegrationState(configured=settings.uyuni_configured)
     ansible = IntegrationState(
@@ -49,19 +58,79 @@ def status(user: models.User = Depends(get_current_user)) -> IntegrationStatus:
     )
 
 
+@router.get("/config", response_model=StackConfiguration)
+def get_configuration(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+) -> StackConfiguration:
+    return runtime_configuration_service.read(db)
+
+
+@router.put("/config", response_model=StackConfiguration)
+def update_configuration(
+    payload: StackConfigurationUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(require_roles("admin")),
+) -> StackConfiguration:
+    result = runtime_configuration_service.save(
+        db,
+        payload,
+        updated_by_id=user.id,
+    )
+    audit_service.record(
+        db,
+        actor=user,
+        action="integrations.config.update",
+        target_type="integration_config",
+        target_id="stack",
+        data={"fields": sorted(payload.model_fields_set)},
+        request=request,
+    )
+    db.commit()
+    return result
+
+
+@router.delete("/config", response_model=StackConfiguration)
+def reset_configuration(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(require_roles("admin")),
+) -> StackConfiguration:
+    result = runtime_configuration_service.reset(db)
+    audit_service.record(
+        db,
+        actor=user,
+        action="integrations.config.reset",
+        target_type="integration_config",
+        target_id="stack",
+        request=request,
+    )
+    db.commit()
+    return result
+
+
 @router.post("/wazuh/test", response_model=IntegrationState)
 def test_wazuh(
+    db: Session = Depends(get_db),
     user: models.User = Depends(require_roles("admin", "operator")),
 ) -> IntegrationState:
-    settings = get_settings()
+    base_settings = get_settings()
+    settings = runtime_configuration_service.effective_settings(db, base_settings)
     if not settings.wazuh_configured:
         return IntegrationState(configured=False, reachable=False)
     try:
-        agents = wazuh_service.get_client().test_connection()
+        client = (
+            wazuh_service.get_client()
+            if settings is base_settings
+            else wazuh_service.get_client(settings=settings)
+        )
+        agents = client.test_connection()
     except (IntegrationNotConfigured, IntegrationUnavailable) as exc:
         logger.warning("Wazuh API connectivity test failed: %s", exc)
         return IntegrationState(
-            configured=True, reachable=False,
+            configured=True,
+            reachable=False,
             detail=str(exc)[:300],
         )
     return IntegrationState(
@@ -73,13 +142,20 @@ def test_wazuh(
 
 @router.post("/uyuni/test", response_model=IntegrationState)
 def test_uyuni(
+    db: Session = Depends(get_db),
     user: models.User = Depends(require_roles("admin", "operator")),
 ) -> IntegrationState:
-    settings = get_settings()
+    base_settings = get_settings()
+    settings = runtime_configuration_service.effective_settings(db, base_settings)
     if not settings.uyuni_configured:
         return IntegrationState(configured=False, reachable=False)
     try:
-        systems = uyuni_service.get_client().test_connection()
+        client = (
+            uyuni_service.get_client()
+            if settings is base_settings
+            else uyuni_service.get_client(settings=settings)
+        )
+        systems = client.test_connection()
     except (IntegrationNotConfigured, IntegrationUnavailable) as exc:
         logger.warning("Uyuni XML-RPC connectivity test failed: %s", exc)
         return IntegrationState(
@@ -151,9 +227,11 @@ def sync_wazuh(
     db: Session = Depends(get_db),
     user: models.User = Depends(require_roles("admin", "operator")),
 ) -> dict:
-    agents = wazuh_service.sync_agents(db)
-    alerts = wazuh_service.sync_alerts(db)
-    vulnerabilities = wazuh_service.sync_vulnerabilities(db)
+    settings = runtime_configuration_service.effective_settings(db)
+    client = wazuh_service.get_client(settings=settings)
+    agents = wazuh_service.sync_agents(db, client=client)
+    alerts = wazuh_service.sync_alerts(db, client=client)
+    vulnerabilities = wazuh_service.sync_vulnerabilities(db, client=client)
     result = {
         "agents": agents,
         "alerts": alerts,

@@ -24,6 +24,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   TriangleAlert,
+  UserRound,
   type LucideIcon,
 } from 'lucide-react'
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
@@ -37,6 +38,8 @@ import {
   type PatchFinding,
   type Playbook,
   type PlaybookDetail,
+  type IntegrationState,
+  type StackConfiguration,
 } from './api'
 
 type NavItem = { to: string; label: string; icon: LucideIcon }
@@ -68,6 +71,7 @@ const navGroups: Array<{ label: string; items: NavItem[] }> = [
     label: 'Système',
     items: [
       { to: '/audit', label: 'Audit', icon: Activity },
+      { to: '/profile', label: 'Profil', icon: UserRound },
       { to: '/settings', label: 'Paramètres', icon: SettingsIcon },
     ],
   },
@@ -1460,8 +1464,19 @@ function Patching() {
 
 function Detection() {
   const client = useQueryClient()
-  const { data = [], isLoading, error } = useQuery({ queryKey: ['alerts'], queryFn: api.alerts })
-  const summary = useQuery({ queryKey: ['alert-summary'], queryFn: api.alertSummary, retry: false })
+  const { data = [], isLoading, error } = useQuery({
+    queryKey: ['alerts'],
+    queryFn: api.alerts,
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
+  })
+  const summary = useQuery({
+    queryKey: ['alert-summary'],
+    queryFn: api.alertSummary,
+    retry: false,
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
+  })
   const sync = useMutation({ mutationFn: api.syncAllWazuh, onSuccess: () => { void client.invalidateQueries({ queryKey: ['alerts'] }); void client.invalidateQueries({ queryKey: ['patch-findings'] }); void client.invalidateQueries({ queryKey: ['alert-summary'] }) } })
   const ack = useMutation({ mutationFn: api.acknowledgeAlert, onSuccess: () => { void client.invalidateQueries({ queryKey: ['alerts'] }); void client.invalidateQueries({ queryKey: ['alert-summary'] }) } })
   const response = useMutation({ mutationFn: ({ id, action }: { id: number; action: 'firewall-drop' | 'disable-account' }) => api.activeResponse(id, action), onSuccess: () => { void client.invalidateQueries({ queryKey: ['alerts'] }); void client.invalidateQueries({ queryKey: ['alert-summary'] }) } })
@@ -1683,23 +1698,184 @@ function Playbooks() {
 /* Settings                                                            */
 /* ------------------------------------------------------------------ */
 
-function useIntegrationTest(name: 'wazuh' | 'uyuni' | 'ansible', client: ReturnType<typeof useQueryClient>) {
+function useIntegrationTest(
+  name: 'wazuh' | 'uyuni' | 'ansible',
+  onSuccess: (state: IntegrationState) => void,
+) {
   return useMutation({
     mutationFn: () => api.testIntegration(name),
-    onSuccess: (state) => client.setQueryData(['integrations'], (current: Awaited<ReturnType<typeof api.integrations>> | undefined) => current ? { ...current, [name]: state } : current),
+    onSuccess,
   })
 }
 
-function Settings() {
+function StackConfigurationEditor({ onSaved }: { onSaved: () => Promise<void> }) {
   const client = useQueryClient()
-  const { data, isLoading, isError } = useQuery({ queryKey: ['integrations'], queryFn: api.integrations })
+  const configuration = useQuery({
+    queryKey: ['integration-config'],
+    queryFn: api.stackConfiguration,
+  })
+  const [edited, setEdited] = useState<StackConfiguration | null>(null)
+  const form = edited ?? configuration.data
+
+  const save = useMutation({
+    mutationFn: api.updateStackConfiguration,
+    onSuccess: (updated) => {
+      client.setQueryData(['integration-config'], updated)
+      setEdited(updated)
+      void onSaved()
+    },
+  })
+  const reset = useMutation({
+    mutationFn: api.resetStackConfiguration,
+    onSuccess: (updated) => {
+      client.setQueryData(['integration-config'], updated)
+      setEdited(updated)
+      void onSaved()
+    },
+  })
+  const update = <K extends keyof StackConfiguration>(key: K, value: StackConfiguration[K]) => {
+    if (form) {
+      save.reset()
+      reset.reset()
+      setEdited({ ...form, [key]: value })
+    }
+  }
+  const error = save.error ?? reset.error
+
+  if (configuration.isError) return <div className="alert error">Impossible de charger la configuration de la stack.</div>
+  if (configuration.isLoading || !form) return <Loading label="Chargement de la configuration…" />
+
+  return (
+    <section className="panel form-panel">
+      <div className="panel-heading">
+        <div><h3>Configuration de la stack</h3><p className="muted">Les adresses et ports sont enregistrés en base et appliqués sans redémarrage.</p></div>
+      </div>
+      <form onSubmit={(event) => { event.preventDefault(); save.mutate(form) }}>
+        <div className="form-grid three">
+          <label>Adresse Wazuh Manager (agents)
+            <input type="text" value={form.wazuh_manager_address} placeholder="Détection depuis l’URL API si vide" onChange={(event) => update('wazuh_manager_address', event.target.value)} />
+          </label>
+          <label>Port publié pour les agents
+            <input type="number" min={1} max={65535} required value={form.wazuh_manager_agent_port} onChange={(event) => update('wazuh_manager_agent_port', Number(event.target.value))} />
+          </label>
+          <label>Port publié pour l’enrôlement
+            <input type="number" min={1} max={65535} required value={form.wazuh_manager_enrollment_port} onChange={(event) => update('wazuh_manager_enrollment_port', Number(event.target.value))} />
+          </label>
+          <label>URL de l’API Wazuh
+            <input type="url" value={form.wazuh_api_url} placeholder="https://wazuh.manager:55000" onChange={(event) => update('wazuh_api_url', event.target.value)} />
+          </label>
+          <label>URL de l’Indexer Wazuh
+            <input type="url" value={form.wazuh_indexer_url} placeholder="https://wazuh.indexer:9200" onChange={(event) => update('wazuh_indexer_url', event.target.value)} />
+          </label>
+          <label>URL du Dashboard Wazuh
+            <input type="url" value={form.wazuh_dashboard_url} placeholder="https://wazuh.dashboard:5601" onChange={(event) => update('wazuh_dashboard_url', event.target.value)} />
+          </label>
+          <label>URL XML-RPC Uyuni
+            <input type="url" value={form.uyuni_api_url} placeholder="https://uyuni/rpc/api" onChange={(event) => update('uyuni_api_url', event.target.value)} />
+          </label>
+        </div>
+        {error && <div className="alert error">{error instanceof Error ? error.message : 'Impossible d’enregistrer la configuration.'}</div>}
+        {(save.isSuccess || reset.isSuccess) && <div className="alert success" role="status">Configuration enregistrée et appliquée par LinSec360.</div>}
+        <p className="integration-help">Les identifiants restent dans l’environnement sécurisé du serveur. Les réglages sont appliqués par LinSec360 sans redémarrage. Si vous modifiez les ports, faites-les aussi correspondre à <code>WAZUH_MANAGER_PORT</code> et <code>WAZUH_MANAGER_ENROLLMENT_PORT</code> dans <code>.env</code>, puis recréez le conteneur Manager : cette page ne change pas le mappage des ports Docker. Vider une URL désactive son endpoint personnalisé ; « Restaurer » reprend les valeurs de `.env`.</p>
+        <div className="form-actions pad-top">
+          <button type="button" className="secondary" disabled={reset.isPending || save.isPending} onClick={() => reset.mutate()}>{reset.isPending ? 'Restauration…' : 'Restaurer .env'}</button>
+          <button type="submit" className="primary" disabled={save.isPending || reset.isPending}>{save.isPending ? 'Enregistrement…' : 'Enregistrer la configuration'}</button>
+        </div>
+      </form>
+    </section>
+  )
+}
+
+function Profile() {
+  const me = useQuery({ queryKey: ['me'], queryFn: api.me, retry: false })
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmation, setConfirmation] = useState('')
+  const [formError, setFormError] = useState('')
+  const [changed, setChanged] = useState(false)
+  const changePassword = useMutation({
+    mutationFn: api.changePassword,
+    onSuccess: () => {
+      setCurrentPassword('')
+      setNewPassword('')
+      setConfirmation('')
+      setFormError('')
+      setChanged(true)
+    },
+  })
+
+  return (
+    <div className="page">
+      <PageHeader eyebrow="Compte" title="Mon profil" description="Informations du compte et sécurité de la session." />
+      {me.isError ? <div className="alert error">Impossible de charger le profil.</div> : (
+        <section className="panel form-panel">
+          <div className="panel-heading">
+            <div><h3>{me.data?.username ?? 'Compte'}</h3><p className="muted">Rôle : {me.data?.role ?? '—'}</p></div>
+          </div>
+          <form onSubmit={(event) => {
+            event.preventDefault()
+            setChanged(false)
+            setFormError('')
+            if (newPassword !== confirmation) {
+              setFormError('La confirmation ne correspond pas au nouveau mot de passe.')
+              return
+            }
+            changePassword.mutate({ current_password: currentPassword, new_password: newPassword })
+          }}>
+            <div className="form-grid three">
+              <label>Mot de passe actuel
+                <input type="password" autoComplete="current-password" minLength={1} maxLength={256} required value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} />
+              </label>
+              <label>Nouveau mot de passe
+                <input type="password" autoComplete="new-password" minLength={12} maxLength={256} required value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
+              </label>
+              <label>Confirmer le nouveau mot de passe
+                <input type="password" autoComplete="new-password" minLength={12} maxLength={256} required value={confirmation} onChange={(event) => setConfirmation(event.target.value)} />
+              </label>
+            </div>
+            {formError && <div className="alert error">{formError}</div>}
+            {changePassword.isError && <div className="alert error">{changePassword.error instanceof Error ? changePassword.error.message : 'Échec du changement de mot de passe.'}</div>}
+            {changed && <div className="alert success">Mot de passe modifié. Les autres sessions ont été déconnectées.</div>}
+            <p className="integration-help">Le nouveau mot de passe doit comporter au moins 12 caractères. Votre session actuelle reste active ; les autres sessions sont révoquées.</p>
+            <div className="form-actions pad-top">
+              <button type="submit" className="primary" disabled={changePassword.isPending}>{changePassword.isPending ? 'Modification…' : 'Changer le mot de passe'}</button>
+            </div>
+          </form>
+        </section>
+      )}
+    </div>
+  )
+}
+
+function Settings() {
+  const currentUser = useQuery({ queryKey: ['me'], queryFn: api.me })
+  const integrationsQuery = useQuery({
+    queryKey: ['integrations'],
+    queryFn: api.integrations,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
+  })
+  const { data, isLoading, isError } = integrationsQuery
+  const [tested, setTested] = useState<Partial<Record<'wazuh' | 'uyuni' | 'ansible', IntegrationState>>>({})
   const sshKey = useQuery({ queryKey: ['ansible-public-key'], queryFn: api.ansiblePublicKey, retry: false })
-  const testWazuh = useIntegrationTest('wazuh', client)
-  const testUyuni = useIntegrationTest('uyuni', client)
-  const testAnsible = useIntegrationTest('ansible', client)
+  const recordTest = (key: 'wazuh' | 'uyuni' | 'ansible') => (state: IntegrationState) => {
+    setTested((current) => ({ ...current, [key]: state }))
+  }
+  const testWazuh = useIntegrationTest('wazuh', recordTest('wazuh'))
+  const testUyuni = useIntegrationTest('uyuni', recordTest('uyuni'))
+  const testAnsible = useIntegrationTest('ansible', recordTest('ansible'))
   const { mutate: runWazuhTest } = testWazuh
   const { mutate: runUyuniTest } = testUyuni
   const { mutate: runAnsibleTest } = testAnsible
+  const refresh = async () => {
+    setTested({})
+    await integrationsQuery.refetch()
+    await Promise.allSettled([
+      testWazuh.mutateAsync(),
+      testUyuni.mutateAsync(),
+      testAnsible.mutateAsync(),
+    ])
+  }
   const autoTestsStarted = useRef(false)
   useEffect(() => {
     if (!data || autoTestsStarted.current) return
@@ -1711,9 +1887,9 @@ function Settings() {
   if (isLoading) return <Loading label="Chargement des intégrations…" />
   if (isError || !data) return <div className="alert error">Impossible de charger les paramètres.</div>
   const integrations = [
-    { name: 'Wazuh', key: 'wazuh' as const, label: 'Détection & SIEM', icon: Radar, state: data.wazuh, mutation: testWazuh },
-    { name: 'Uyuni', key: 'uyuni' as const, label: 'Gestion des correctifs', icon: Boxes, state: data.uyuni, mutation: testUyuni },
-    { name: 'Ansible', key: 'ansible' as const, label: 'Orchestration', icon: Cpu, state: data.ansible, mutation: testAnsible },
+    { name: 'Wazuh', key: 'wazuh' as const, label: 'Détection & SIEM', icon: Radar, state: tested.wazuh ?? data.wazuh, mutation: testWazuh },
+    { name: 'Uyuni', key: 'uyuni' as const, label: 'Gestion des correctifs', icon: Boxes, state: tested.uyuni ?? data.uyuni, mutation: testUyuni },
+    { name: 'Ansible', key: 'ansible' as const, label: 'Orchestration', icon: Cpu, state: tested.ansible ?? data.ansible, mutation: testAnsible },
   ]
   const statusText = (value: boolean | null) => value === null ? 'Non testé' : value ? 'Oui' : 'Non'
   return (
@@ -1722,7 +1898,7 @@ function Settings() {
         eyebrow="Configuration"
         title="Paramètres"
         description="Récapitulatif de la pile, adresses détectées et tests de connectivité."
-        actions={<button className="secondary" onClick={() => void client.invalidateQueries({ queryKey: ['integrations'] })}><RefreshCw /> Actualiser</button>}
+        actions={<button className="secondary" onClick={() => void refresh()}><RefreshCw /> Actualiser</button>}
       />
       <h2 className="section-title">Récapitulatif de la stack</h2>
       <div className="integration-grid stack-summary">
@@ -1748,11 +1924,11 @@ function Settings() {
           ...data.stack,
         ].map((component) => {
           const testedState = component.key === 'wazuh-api'
-            ? data.wazuh
+            ? tested.wazuh ?? data.wazuh
             : component.key === 'uyuni'
-              ? data.uyuni
+              ? tested.uyuni ?? data.uyuni
               : component.key === 'ansible'
-                ? data.ansible
+                ? tested.ansible ?? data.ansible
                 : undefined
           const reachable = testedState?.reachable ?? component.reachable
           const status = !component.configured
@@ -1779,6 +1955,7 @@ function Settings() {
         })}
       </div>
       <p className="integration-help">Les IP sont résolues depuis le conteneur API. Une adresse Docker interne n’est pas nécessairement joignable depuis les serveurs gérés ; pour les agents Wazuh, vérifiez l’adresse visible sur la ligne « Wazuh Manager (agents) ».</p>
+      {currentUser.data?.role === 'admin' && <StackConfigurationEditor onSaved={refresh} />}
       <h2 className="section-title">Tests de connexion</h2>
       <div className="integration-grid">
         {integrations.map(({ name, label, icon: Icon, key, state, mutation }) => (
@@ -1900,6 +2077,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
             <Route path="/patching" element={<Patching />} />
             <Route path="/detection" element={<Detection />} />
             <Route path="/audit" element={<Audit />} />
+            <Route path="/profile" element={<Profile />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

@@ -119,6 +119,19 @@ def test_worker_runs_ansible_and_updates_state(
     settings = get_settings()
     monkeypatch.setattr(settings, "wazuh_manager_address", "")
     monkeypatch.setattr(settings, "wazuh_api_url", "https://192.0.2.25:55000")
+    with session_scope() as db:
+        db.add(
+            models.RuntimeSetting(
+                key="wazuh_manager_agent_port",
+                value="1614",
+            )
+        )
+        db.add(
+            models.RuntimeSetting(
+                key="wazuh_manager_enrollment_port",
+                value="1615",
+            )
+        )
 
     def fake_run(command, **kwargs):
         captured["command"] = command
@@ -170,6 +183,8 @@ def test_worker_runs_ansible_and_updates_state(
     assert "StrictHostKeyChecking=yes" in captured["environment"]["ANSIBLE_SSH_ARGS"]
     assert "GlobalKnownHostsFile=/dev/null" in captured["environment"]["ANSIBLE_SSH_ARGS"]
     assert captured["extra_vars"]["linsec_wazuh_manager_address"] == "192.0.2.25"
+    assert captured["extra_vars"]["linsec_wazuh_manager_agent_port"] == 1614
+    assert captured["extra_vars"]["linsec_wazuh_manager_enrollment_port"] == 1615
 
     response = client.get(f"/api/v1/deployments/{deployment_id}/log")
     assert response.status_code == 200

@@ -9,7 +9,13 @@ from .. import models
 from ..db import get_db
 from ..schemas import ActiveResponseRequest, AlertOut
 from ..security import get_current_user, require_roles
-from ..services import alert_service, audit_service, kpi_service, wazuh_service
+from ..services import (
+    alert_service,
+    audit_service,
+    kpi_service,
+    runtime_configuration_service,
+    wazuh_service,
+)
 
 router = APIRouter(prefix="/alerts", tags=["detection"])
 
@@ -101,7 +107,8 @@ def active_response(
     allowed = {"firewall-drop", "disable-account"}
     if payload.action not in allowed:
         return {"status": "rejected", "reason": "action is not allowlisted"}
-    result = wazuh_service.get_client().active_response(
+    settings = runtime_configuration_service.effective_settings(db)
+    result = wazuh_service.get_client(settings=settings).active_response(
         agent_id=alert.agent_id,
         action=payload.action,
         alert_id=alert.alert_id,

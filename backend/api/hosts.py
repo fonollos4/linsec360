@@ -9,7 +9,6 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 from sqlalchemy.orm import Session
 
 from .. import models
-from ..config import get_settings
 from ..db import get_db
 from ..errors import ConflictError, ForbiddenError, IntegrationUnavailable
 from ..schemas import (
@@ -40,6 +39,7 @@ from ..services import (
     livepatch_service,
     oscap_service,
     patch_service,
+    runtime_configuration_service,
     ssh_enrollment_service,
     ssh_service,
     wazuh_service,
@@ -398,9 +398,10 @@ def get_host_posture(
     livepatch = livepatch_service.latest_for_host(db, host.id)
 
     agent: AgentOut | None = None
-    if get_settings().wazuh_configured:
+    settings = runtime_configuration_service.effective_settings(db)
+    if settings.wazuh_configured:
         try:
-            for item in wazuh_service.get_client().list_agents():
+            for item in wazuh_service.get_client(settings=settings).list_agents():
                 if item["id"] == host.agent_id or item["name"] == host.name:
                     agent = AgentOut(**item, host_id=host.id)
                     break

@@ -6,6 +6,7 @@ import ipaddress
 import re
 from datetime import datetime
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
@@ -25,6 +26,18 @@ class Message(BaseModel):
 class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=256)
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=12, max_length=256)
+
+    @field_validator("new_password")
+    @classmethod
+    def _new_password(cls, value: str) -> str:
+        if "\0" in value or "\r" in value or "\n" in value:
+            raise ValueError("password contains an unsupported character")
+        return value
 
 
 class UserOut(ORMModel):
@@ -622,6 +635,79 @@ class IntegrationStatus(BaseModel):
     uyuni: IntegrationState
     ansible: IntegrationState
     stack: list[StackComponentState] = Field(default_factory=list)
+
+
+class StackConfiguration(BaseModel):
+    wazuh_manager_address: str = Field(max_length=253)
+    wazuh_manager_agent_port: int = Field(ge=1, le=65535)
+    wazuh_manager_enrollment_port: int = Field(ge=1, le=65535)
+    wazuh_api_url: str = Field(max_length=1024)
+    wazuh_indexer_url: str = Field(max_length=1024)
+    wazuh_dashboard_url: str = Field(max_length=1024)
+    uyuni_api_url: str = Field(max_length=1024)
+
+
+class StackConfigurationUpdate(StackConfiguration):
+    @field_validator(
+        "wazuh_manager_address",
+        "wazuh_api_url",
+        "wazuh_indexer_url",
+        "wazuh_dashboard_url",
+        "uyuni_api_url",
+    )
+    @classmethod
+    def _trim_config_values(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator(
+        "wazuh_api_url",
+        "wazuh_indexer_url",
+        "wazuh_dashboard_url",
+        "uyuni_api_url",
+    )
+    @classmethod
+    def _validate_endpoint(cls, value: str) -> str:
+        if not value:
+            return value
+        try:
+            parsed = urlsplit(value)
+            _ = parsed.port
+        except ValueError as exc:
+            raise ValueError("invalid endpoint URL") from exc
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "endpoint URL must use HTTP(S) and contain no credentials, "
+                "query, or fragment"
+            )
+        return value.rstrip("/")
+
+    @field_validator("wazuh_manager_address")
+    @classmethod
+    def _validate_manager_address(cls, value: str) -> str:
+        if not value:
+            return value
+        if any(character.isspace() for character in value) or any(
+            character in value for character in "/@?#"
+        ):
+            raise ValueError("manager address must be a hostname or IP address")
+        try:
+            ipaddress.ip_address(value.strip("[]"))
+        except ValueError:
+            if not re.fullmatch(
+                r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*",
+                value,
+            ):
+                raise ValueError(
+                    "manager address must be a hostname or IP address"
+                ) from None
+        return value
 
 
 class AuditOut(ORMModel):

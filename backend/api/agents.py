@@ -9,7 +9,12 @@ from .. import models
 from ..db import get_db
 from ..schemas import AgentOut, AgentSummary, KpiItem
 from ..security import get_current_user, require_roles
-from ..services import audit_service, kpi_service, wazuh_service
+from ..services import (
+    audit_service,
+    kpi_service,
+    runtime_configuration_service,
+    wazuh_service,
+)
 
 router = APIRouter(prefix="/agents", tags=["detection"])
 
@@ -34,7 +39,8 @@ def list_agents(
     user: models.User = Depends(get_current_user),
 ) -> list[AgentOut]:
     by_agent, by_name = _host_index(db)
-    agents = wazuh_service.get_client().list_agents()
+    settings = runtime_configuration_service.effective_settings(db)
+    agents = wazuh_service.get_client(settings=settings).list_agents()
     return [
         _agent_out(
             agent,
@@ -49,7 +55,8 @@ def agent_summary(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ) -> AgentSummary:
-    agents = wazuh_service.get_client().list_agents()
+    settings = runtime_configuration_service.effective_settings(db)
+    agents = wazuh_service.get_client(settings=settings).list_agents()
     statuses = [str(agent.get("status") or "unknown").lower() for agent in agents]
     active = statuses.count("active")
     total = len(agents)

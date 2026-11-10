@@ -13,17 +13,11 @@
   gather_facts: true
 
   vars:
-    linsec_config_dir: "{{ linsec_config_dir | default(playbook_dir ~ '/../../config') }}"
-    linsec_artifact_dir: "{{ linsec_artifact_dir | default(playbook_dir ~ '/../../artifacts') }}"
+    openscap_config_dir: "{{ linsec_config_dir | default(playbook_dir ~ '/../../config') }}"
+    openscap_artifact_dir: "{{ linsec_artifact_dir | default(playbook_dir ~ '/../../artifacts') }}"
     openscap_profile: "{{ openscap_profile | default('cis_rhel.xml' if ansible_os_family == 'RedHat' else 'cis_ubuntu.xml') }}"
     openscap_backend: ssg
-    openscap_tailoring_file: "{{ linsec_config_dir }}/openscap/profiles/{{ openscap_profile }}"
-    openscap_ssg_datastream_rhel: /usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml
-    openscap_ssg_datastream_ubuntu: /usr/share/xml/scap/ssg/content/ssg-ubuntu2204-ds.xml
-    openscap_ssg_datastream: >-
-      {{ openscap_ssg_datastream_rhel
-         if ansible_os_family == 'RedHat'
-         else openscap_ssg_datastream_ubuntu }}
+    openscap_tailoring_file: "{{ openscap_config_dir }}/openscap/profiles/{{ openscap_profile }}"
     openscap_profile_id: >-
       {{ 'xccdf_org.ssgproject.content_profile_cis'
          if ansible_os_family == 'RedHat'
@@ -45,6 +39,57 @@
              else ['libopenscap8', 'openscap-scanner', 'ssg-debderived', 'ssg-base'] }}
       when: not ansible_check_mode
 
+    - name: Find installed SCAP Security Guide data streams
+      ansible.builtin.find:
+        paths: /usr/share/xml/scap/ssg/content
+        patterns: "ssg-*-ds.xml"
+        file_type: file
+      register: openscap_datastream_files
+
+    - name: Build data stream candidates for this operating system
+      ansible.builtin.set_fact:
+        openscap_ssg_datastream_candidates: >-
+          {{
+            [
+              'ssg-rhel' ~ ansible_distribution_major_version ~ '-ds.xml',
+              'ssg-redhat' ~ ansible_distribution_major_version ~ '-ds.xml',
+              'ssg-rl' ~ ansible_distribution_major_version ~ '-ds.xml',
+              'ssg-rocky' ~ ansible_distribution_major_version ~ '-ds.xml',
+              'ssg-alma' ~ ansible_distribution_major_version ~ '-ds.xml',
+              'ssg-almalinux' ~ ansible_distribution_major_version ~ '-ds.xml',
+              'ssg-ol' ~ ansible_distribution_major_version ~ '-ds.xml',
+              'ssg-oraclelinux' ~ ansible_distribution_major_version ~ '-ds.xml',
+              'ssg-cs' ~ ansible_distribution_major_version ~ '-ds.xml',
+              'ssg-centos' ~ ansible_distribution_major_version ~ '-ds.xml'
+            ]
+            if ansible_os_family == 'RedHat'
+            else [
+              'ssg-ubuntu' ~
+              (ansible_distribution_version | regex_replace('\\.', '')) ~
+              '-ds.xml'
+            ]
+          }}
+
+    - name: Select the data stream matching this operating system
+      ansible.builtin.set_fact:
+        openscap_ssg_datastream: >-
+          {{
+            openscap_ssg_datastream_candidates
+            | select('in', openscap_datastream_files.files | map(attribute='path') | map('basename') | list)
+            | list
+            | first
+            | default('')
+          }}
+
+    - name: Validate that a matching SCAP data stream was installed
+      ansible.builtin.assert:
+        that:
+          - openscap_ssg_datastream | length > 0
+        fail_msg: >-
+          No SCAP Security Guide data stream was found for
+          {{ ansible_distribution }} {{ ansible_distribution_version }}.
+          Installed files: {{ openscap_datastream_files.files | map(attribute='path') | map('basename') | list }}
+
     - name: Ensure the scan result directory exists
       ansible.builtin.file:
         path: "{{ openscap_results_dir }}"
@@ -60,7 +105,7 @@
         --tailoring-file {{ openscap_tailoring_file }}
         --results {{ openscap_result_path }}
         --report {{ openscap_results_dir }}/{{ inventory_hostname }}-report.html
-        {{ openscap_ssg_datastream }}
+        /usr/share/xml/scap/ssg/content/{{ openscap_ssg_datastream }}
       register: openscap_scan
       changed_when: false
       failed_when: openscap_scan.rc not in [0, 2]
@@ -69,7 +114,7 @@
     - name: Fetch the ARF result to the controller
       ansible.builtin.fetch:
         src: "{{ openscap_result_path }}"
-        dest: "{{ linsec_artifact_dir }}/openscap/"
+        dest: "{{ openscap_artifact_dir }}/openscap/"
         flat: true
       check_mode: false
 

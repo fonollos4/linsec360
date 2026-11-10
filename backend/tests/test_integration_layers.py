@@ -62,6 +62,36 @@ def test_wazuh_agent_playbook_defaults_are_not_recursive():
     assert play["vars"]["wazuh_agent_groups"] == (
         "{{ linsec_wazuh_agent_groups | default('default', true) }}"
     )
+    assert play["vars"]["wazuh_manager_agent_port"] == (
+        "{{ linsec_wazuh_manager_agent_port | default(1514) }}"
+    )
+    assert play["vars"]["wazuh_manager_enrollment_port"] == (
+        "{{ linsec_wazuh_manager_enrollment_port | default(1515) }}"
+    )
+
+
+def test_openscap_playbook_discovers_a_distribution_specific_data_stream():
+    playbook_path = (
+        Path(__file__).resolve().parents[2]
+        / "taskengine"
+        / "playbooks"
+        / "openscap-scan.yml"
+    )
+    play = yaml.safe_load(playbook_path.read_text(encoding="utf-8"))[0]
+    tasks = play["tasks"]
+
+    assert any("ansible.builtin.find" in task for task in tasks)
+    assert any(
+        task.get("name") == "Validate that a matching SCAP data stream was installed"
+        for task in tasks
+    )
+    scan_task = next(
+        task
+        for task in tasks
+        if task.get("name") == "Run the OpenSCAP XCCDF evaluation"
+    )
+    assert "{{ openscap_ssg_datastream }}" in scan_task["ansible.builtin.command"]
+    assert "ssg-rhel9-ds.xml" not in repr(play)
 
 
 def _post_scan(client: TestClient, headers: dict[str, str], host_name: str = "web01"):
@@ -612,6 +642,98 @@ def test_integration_status_summarizes_addresses_without_exposing_credentials(
     assert "secret" not in response.text
 
 
+def test_stack_configuration_is_persisted_and_resettable(
+    client: TestClient, csrf_headers
+):
+    headers = csrf_headers()
+    payload = {
+        "wazuh_manager_address": "192.0.2.40",
+        "wazuh_manager_agent_port": 1514,
+        "wazuh_manager_enrollment_port": 1516,
+        "wazuh_api_url": "https://siem.example:55000",
+        "wazuh_indexer_url": "https://indexer.example:9200",
+        "wazuh_dashboard_url": "https://dashboard.example:5601",
+        "uyuni_api_url": "https://uyuni.example/rpc/api",
+    }
+
+    invalid_payload = {**payload, "wazuh_api_url": "https://user:secret@siem.example"}
+    response = client.put(
+        "/api/v1/integrations/config",
+        headers=headers,
+        json=invalid_payload,
+    )
+    assert response.status_code == 422
+
+    response = client.put(
+        "/api/v1/integrations/config",
+        headers=headers,
+        json=payload,
+    )
+    assert response.status_code == 200
+    assert response.json() == payload
+
+    response = client.get("/api/v1/integrations/config")
+    assert response.status_code == 200
+    assert response.json() == payload
+
+    response = client.get("/api/v1/integrations/status")
+    components = {item["key"]: item for item in response.json()["stack"]}
+    assert components["wazuh-manager"]["endpoint"].startswith("TCP 192.0.2.40:1514")
+    assert "1516" in components["wazuh-manager"]["endpoint"]
+
+    response = client.delete(
+        "/api/v1/integrations/config",
+        headers=headers,
+    )
+    assert response.status_code == 200
+    from backend.config import get_settings
+
+    assert (
+        client.get("/api/v1/integrations/config").json()["wazuh_manager_address"]
+        == get_settings().wazuh_manager_address
+    )
+
+
+def test_stack_configuration_hides_credentials_embedded_in_environment_urls(
+    client: TestClient, monkeypatch
+):
+    from backend.config import get_settings
+    from backend.services import runtime_configuration_service
+
+    settings = get_settings()
+    monkeypatch.setattr(
+        settings,
+        "wazuh_api_url",
+        "https://api-user:secret@siem.example:55000/api?token=hidden",
+    )
+    monkeypatch.setattr(runtime_configuration_service, "get_settings", lambda: settings)
+
+    with session_scope() as db:
+        configuration = runtime_configuration_service.read(db)
+
+    assert configuration.wazuh_api_url == "https://siem.example:55000/api"
+    assert "secret" not in configuration.model_dump_json()
+    assert "hidden" not in configuration.model_dump_json()
+
+
+def test_viewer_cannot_change_stack_configuration(client: TestClient, csrf_headers):
+    headers = csrf_headers("viewer", "viewer-test-password-123")
+    response = client.put(
+        "/api/v1/integrations/config",
+        headers=headers,
+        json={
+            "wazuh_manager_address": "",
+            "wazuh_manager_agent_port": 1514,
+            "wazuh_manager_enrollment_port": 1515,
+            "wazuh_api_url": "",
+            "wazuh_indexer_url": "",
+            "wazuh_dashboard_url": "",
+            "uyuni_api_url": "",
+        },
+    )
+    assert response.status_code == 403
+
+
 def test_manager_address_auto_detection_skips_docker_service_alias(monkeypatch):
     from backend.config import get_settings
 
@@ -630,6 +752,27 @@ def test_manager_address_auto_detection_skips_docker_service_alias(monkeypatch):
         "https://siem.example:55000",
     )
     assert settings.effective_wazuh_manager_address == "siem.example"
+
+
+def test_wazuh_vulnerabilities_use_inventory_endpoint(monkeypatch):
+    client = wazuh_service.WazuhClient(settings=SimpleNamespace())
+    calls = []
+
+    def fake_get(path, params):
+        calls.append((path, params))
+        return {
+            "data": {
+                "affected_items": [
+                    {"package": {"name": "openssl"}, "cve": "CVE-2026-0001"}
+                ]
+            }
+        }
+
+    monkeypatch.setattr(client, "_get", fake_get)
+    vulnerabilities = client.list_vulnerabilities("002")
+
+    assert calls == [("/vulnerability/002/inventory", {"limit": 1000})]
+    assert vulnerabilities[0]["cve"] == "CVE-2026-0001"
 
 
 def test_wazuh_connection_test_reports_api_agent_count(
