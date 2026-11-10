@@ -15,7 +15,7 @@
 
   vars:
     wazuh_manager_address: "{{ linsec_wazuh_manager_address | default('', true) }}"
-    wazuh_agent_groups: "{{ linsec_wazuh_agent_groups | default('linsec', true) }}"
+    wazuh_agent_groups: "{{ linsec_wazuh_agent_groups | default('default', true) }}"
     wazuh_managers:
       - address: "{{ wazuh_manager_address }}"
         port: 1514

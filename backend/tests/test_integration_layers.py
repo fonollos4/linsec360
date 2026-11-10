@@ -60,7 +60,7 @@ def test_wazuh_agent_playbook_defaults_are_not_recursive():
         "{{ linsec_wazuh_manager_address | default('', true) }}"
     )
     assert play["vars"]["wazuh_agent_groups"] == (
-        "{{ linsec_wazuh_agent_groups | default('linsec', true) }}"
+        "{{ linsec_wazuh_agent_groups | default('default', true) }}"
     )
 
 
