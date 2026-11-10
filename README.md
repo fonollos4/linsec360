@@ -100,6 +100,17 @@ docker compose -f docker-compose.v2.yml exec api ansible-playbook --version
 docker compose -f docker-compose.v2.yml exec worker ansible-playbook --version
 ```
 
+The Settings page resolves configured service hostnames to IP addresses from
+the API container and summarizes the Web UI, API, database, Redis, Wazuh
+Manager/API/Indexer/Dashboard, Uyuni, Ansible, and SSH key. For
+`wazuh-agent.yml`, LinSec derives the manager address from
+`LINSEC_WAZUH_API_URL` when that hostname is not the Docker-only
+`wazuh.manager` alias. In that default Docker setup, set
+`LINSEC_WAZUH_MANAGER_ADDRESS` to the manager IP or DNS name reachable from
+managed hosts; the page identifies internal Docker addresses so they are not
+mistaken for a remote agent endpoint. Recreate API and worker after changing
+the value.
+
 To include Uyuni in the stack, fill all `UYUNI_*_PASSWORD` values and the
 `UYUNI_FQDN` setting in `.env`, then start the services with the Uyuni profile:
 
@@ -157,7 +168,36 @@ with mode `0600`, set `LINSEC_ANSIBLE_SSH_PRIVATE_KEY_PATH` to its container
 path (for example `/opt/linsec/.ssh/id_ed25519`), then recreate both `api` and
 `worker`. Passphrase-protected keys are not supported. The Settings page checks
 the configured key and displays only its public half; it never exposes the
-private key.
+private key. To generate the default key without overwriting an existing one,
+run `./config/scripts/generate-ansible-key.sh`; the mounted directory must be
+owned by the configured `LINSEC_UID`/`LINSEC_GID` so the API and worker can read
+the mode-`0600` private key.
+
+Two SSH credential workflows are available on a host's detail page:
+
+- **Enrôlement SSH** uses a one-time password to install the public key; that
+  password is not saved.
+- **Authentification Ansible** saves the account password for SSH and sudo.
+  LinSec360 validates SSH login, encrypts the password before storing it in
+  PostgreSQL, and uses password authentication instead of the key on subsequent
+  deployments. The worker places it only in a mode-`0600` temporary inventory
+  and removes that file afterward.
+
+To use password authentication, first approve the SSH fingerprint, then open
+the host detail page and enter the account password under
+**Authentification Ansible**. The mode is shown in the **Connexion Ansible**
+summary card. The password is never returned to the UI or written to logs.
+
+Set `LINSEC_CREDENTIAL_ENCRYPTION_KEY` in the private `.env`, generated with
+`openssl rand -base64 32 | tr '+/' '-_'`. Keep it stable and back it up
+separately from the database; losing it makes saved credentials unrecoverable,
+and rotating it requires re-encrypting every stored password. The example
+value in `.env.example` is intentionally blank.
+
+Deployments re-scan each target and require a live key to match its approved
+fingerprint; host-key checking stays enabled. When a host offers multiple key
+algorithms, LinSec360 reuses the already approved key instead of mistaking
+another stable key for a rotation.
 
 Open the LinSec360 UI at `http://localhost` for local development, and Wazuh Dashboard at
 `https://localhost`. Wazuh Dashboard uses the generated Wazuh admin credentials

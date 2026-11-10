@@ -989,6 +989,8 @@ function HostDetail() {
   const [playbook, setPlaybook] = useState('openscap-scan.yml')
   const [checkMode, setCheckMode] = useState(false)
   const [expectedFingerprint, setExpectedFingerprint] = useState('')
+  const [enrollmentPassword, setEnrollmentPassword] = useState('')
+  const [ansiblePassword, setAnsiblePassword] = useState('')
   const remove = useMutation({ mutationFn: () => api.deleteHost(id), onSuccess: () => { void client.invalidateQueries({ queryKey: ['hosts'] }); navigate('/hosts') } })
   const run = useMutation({ mutationFn: () => api.createDeployment({ environment: host.data?.environment ?? '', playbook, hosts: [host.data?.name ?? ''], check_mode: checkMode }), onSuccess: (deployment) => navigate(`/deployments/${deployment.id}`) })
   const testSSH = useMutation({
@@ -1004,6 +1006,29 @@ function HostDetail() {
       setExpectedFingerprint('')
       testSSH.reset()
       void client.invalidateQueries({ queryKey: ['host', id] })
+    },
+  })
+  const enrollKey = useMutation({
+    mutationFn: (password: string) => api.enrollExistingHostKey(id, password),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ['host', id] })
+      void client.invalidateQueries({ queryKey: ['hosts'] })
+    },
+    onSettled: () => setEnrollmentPassword(''),
+  })
+  const saveAnsiblePassword = useMutation({
+    mutationFn: (password: string) => api.setHostAnsiblePassword(id, password),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ['host', id] })
+      void client.invalidateQueries({ queryKey: ['hosts'] })
+    },
+    onSettled: () => setAnsiblePassword(''),
+  })
+  const clearAnsiblePassword = useMutation({
+    mutationFn: () => api.clearHostAnsiblePassword(id),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ['host', id] })
+      void client.invalidateQueries({ queryKey: ['hosts'] })
     },
   })
   if (host.isLoading || posture.isLoading) return <Loading label="Chargement de la posture…" />
@@ -1041,6 +1066,7 @@ function HostDetail() {
           <dl>
             <dt>Utilisateur</dt><dd>{host.data?.ansible_user}</dd>
             <dt>Port</dt><dd>{host.data?.ansible_port}</dd>
+            <dt>Authentification</dt><dd>{host.data?.ansible_password_configured ? 'Mot de passe SSH + sudo' : 'Clé SSH'}</dd>
             <dt>Statut SSH</dt><dd><StatusBadge value={host.data?.ssh_status} /></dd>
             <dt>Empreinte</dt><dd className="mono">{host.data?.ssh_fingerprint ?? 'Non vérifiée'}</dd>
           </dl>
@@ -1098,11 +1124,47 @@ function HostDetail() {
       </section>
 
       <article className="panel">
+        <div className="panel-heading"><div><p className="eyebrow">Authentification Ansible</p><h2>Mot de passe SSH et sudo</h2></div></div>
+        {host.data?.ansible_user === 'root' ? (
+          <small>La connexion par mot de passe root est désactivée. Utilisez un compte non-root avec sudo.</small>
+        ) : currentUser.data?.role === 'admin' || currentUser.data?.role === 'operator' ? (
+          <>
+            <small>{host.data?.ansible_password_configured ? 'Un mot de passe est enregistré chiffré et sera utilisé pour SSH et sudo.' : 'Le mot de passe saisi sera validé par SSH, chiffré en base, puis utilisé pour SSH et sudo lors des déploiements.'}</small>
+            <div className="form-actions">
+              <label className="fingerprint-confirm">Mot de passe du compte {host.data?.ansible_user}
+                <input type="password" autoComplete="new-password" value={ansiblePassword} onChange={(event) => setAnsiblePassword(event.target.value)} />
+              </label>
+              <button className="secondary" disabled={!host.data?.ssh_fingerprint || !ansiblePassword || saveAnsiblePassword.isPending} onClick={() => saveAnsiblePassword.mutate(ansiblePassword)}>
+                {saveAnsiblePassword.isPending ? 'Vérification et chiffrement…' : 'Enregistrer et vérifier'}
+              </button>
+              {host.data?.ansible_password_configured && <button className="link-button danger-link" disabled={clearAnsiblePassword.isPending} onClick={() => clearAnsiblePassword.mutate()}>Supprimer le mot de passe enregistré</button>}
+            </div>
+            {saveAnsiblePassword.isError && <div className="alert error">{saveAnsiblePassword.error instanceof Error ? saveAnsiblePassword.error.message : 'Enregistrement du mot de passe impossible.'}</div>}
+            {clearAnsiblePassword.isError && <div className="alert error">{clearAnsiblePassword.error instanceof Error ? clearAnsiblePassword.error.message : 'Suppression du mot de passe impossible.'}</div>}
+          </>
+        ) : null}
+      </article>
+
+      <article className="panel">
         <div className="panel-heading"><div><p className="eyebrow">Enrôlement SSH</p><h2>Clé publique Ansible</h2></div></div>
         {publicKey.data ? (
           <>
             <textarea className="ssh-key" readOnly value={publicKey.data.public_key} />
-            <small>{host.data?.ssh_status === 'reachable' ? 'Connexion par clé vérifiée.' : host.data?.ssh_status === 'enrolling' ? 'Installation de la clé en arrière-plan…' : <>Pour les hôtes importés sans enrôlement par mot de passe, ajoutez cette clé dans <code>~/.ssh/authorized_keys</code> du compte <strong>{host.data?.ansible_user}</strong>, puis lancez « Tester SSH ».</>}</small>
+            <small>{host.data?.ansible_password_configured ? 'La connexion Ansible utilise le mot de passe enregistré.' : host.data?.ssh_status === 'reachable' ? 'Connexion par clé vérifiée.' : host.data?.ssh_status === 'enrolling' ? 'Installation de la clé en arrière-plan…' : <>Pour les hôtes importés sans enrôlement par mot de passe, ajoutez cette clé dans <code>~/.ssh/authorized_keys</code> du compte <strong>{host.data?.ansible_user}</strong>, puis lancez « Tester SSH ».</>}</small>
+            {host.data?.ansible_user === 'root' ? (
+              <small>L’installation par mot de passe est désactivée pour root. Utilisez un compte non-root avec sudo.</small>
+            ) : currentUser.data?.role === 'admin' || currentUser.data?.role === 'operator' ? (
+              <div className="form-actions">
+                <label className="fingerprint-confirm">Mot de passe temporaire de {host.data?.ansible_user}
+                  <input type="password" autoComplete="new-password" value={enrollmentPassword} onChange={(event) => setEnrollmentPassword(event.target.value)} />
+                </label>
+                <button className="secondary" disabled={!host.data?.ssh_fingerprint || !enrollmentPassword || enrollKey.isPending || host.data?.ssh_status === 'enrolling'} onClick={() => enrollKey.mutate(enrollmentPassword)}>
+                  {enrollKey.isPending ? 'Vérification et installation…' : 'Installer la clé avec ce mot de passe'}
+                </button>
+                <small>Le mot de passe sert uniquement à installer la clé et n’est pas enregistré.</small>
+              </div>
+            ) : null}
+            {enrollKey.isError && <div className="alert error">{enrollKey.error instanceof Error ? enrollKey.error.message : 'Installation de la clé impossible.'}</div>}
           </>
         ) : <small>Génération de la clé…</small>}
       </article>
@@ -1659,9 +1721,65 @@ function Settings() {
       <PageHeader
         eyebrow="Configuration"
         title="Paramètres"
-        description="État des services de la pile et tests de connectivité."
+        description="Récapitulatif de la pile, adresses détectées et tests de connectivité."
         actions={<button className="secondary" onClick={() => void client.invalidateQueries({ queryKey: ['integrations'] })}><RefreshCw /> Actualiser</button>}
       />
+      <h2 className="section-title">Récapitulatif de la stack</h2>
+      <div className="integration-grid stack-summary">
+        {[
+          {
+            key: 'web',
+            name: 'Interface Web',
+            configured: true,
+            reachable: true,
+            endpoint: window.location.origin,
+            addresses: window.location.hostname ? [window.location.hostname] : [],
+            detail: 'Adresse de l’interface actuellement ouverte.',
+          },
+          {
+            key: 'api',
+            name: 'API LinSec360',
+            configured: true,
+            reachable: true,
+            endpoint: `${window.location.origin}/api/v1`,
+            addresses: window.location.hostname ? [window.location.hostname] : [],
+            detail: 'API utilisée par cette interface.',
+          },
+          ...data.stack,
+        ].map((component) => {
+          const testedState = component.key === 'wazuh-api'
+            ? data.wazuh
+            : component.key === 'uyuni'
+              ? data.uyuni
+              : component.key === 'ansible'
+                ? data.ansible
+                : undefined
+          const reachable = testedState?.reachable ?? component.reachable
+          const status = !component.configured
+            ? 'À configurer'
+            : reachable === null
+              ? 'Configuré'
+              : reachable
+                ? 'Disponible'
+                : 'Indisponible'
+          return (
+            <article className="panel" key={component.key}>
+              <div className="panel-heading">
+                <div className="cell-title"><span className="metric-icon tone-cyan"><Server /></span><div className="cell-stack"><strong>{component.name}</strong><small>{component.endpoint ?? 'Adresse non définie'}</small></div></div>
+                <span className={`badge ${!component.configured || reachable === false ? 'danger' : reachable === true ? 'success' : 'muted'}`}><span className="dot" />{status}</span>
+              </div>
+              <div className="panel-body">
+                <div className="stat-lines">
+                  <div className="stat-line"><span>Adresse(s) résolue(s)</span><strong>{component.addresses.length ? component.addresses.join(', ') : 'Aucune'}</strong></div>
+                </div>
+                {component.detail && <p className="integrations-detail">{component.detail}</p>}
+              </div>
+            </article>
+          )
+        })}
+      </div>
+      <p className="integration-help">Les IP sont résolues depuis le conteneur API. Une adresse Docker interne n’est pas nécessairement joignable depuis les serveurs gérés ; pour les agents Wazuh, vérifiez l’adresse visible sur la ligne « Wazuh Manager (agents) ».</p>
+      <h2 className="section-title">Tests de connexion</h2>
       <div className="integration-grid">
         {integrations.map(({ name, label, icon: Icon, key, state, mutation }) => (
           <article className="panel" key={key}>

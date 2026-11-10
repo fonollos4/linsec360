@@ -32,6 +32,7 @@ export interface Host {
   status: string
   ansible_user: string
   ansible_port: number
+  ansible_password_configured: boolean
   groups: string[]
   ssh_status: string
   ssh_fingerprint: string | null
@@ -95,7 +96,21 @@ export interface Playbook { id: number; filename: string; description: string | 
 export interface PlaybookDetail extends Playbook { content: string; updated_at: string }
 export interface PlaybookValidation { valid: boolean; detail: string }
 export interface IntegrationState { configured: boolean; available: boolean | null; reachable: boolean | null; detail: string | null }
-export interface IntegrationStatus { wazuh: IntegrationState; uyuni: IntegrationState; ansible: IntegrationState }
+export interface StackComponentState {
+  key: string
+  name: string
+  configured: boolean
+  reachable: boolean | null
+  endpoint: string | null
+  addresses: string[]
+  detail: string | null
+}
+export interface IntegrationStatus {
+  wazuh: IntegrationState
+  uyuni: IntegrationState
+  ansible: IntegrationState
+  stack: StackComponentState[]
+}
 export interface WazuhSyncResult {
   agents: { agents: number; hosts: number; matched: number; unmatched: number }
   alerts: { fetched: number; created: number; updated: number }
@@ -222,6 +237,12 @@ export const api = {
     mutating<SSHFingerprint>('/hosts/ssh/fingerprint', 'POST', body),
   enrollHost: (body: HostEnrollmentInput & { verified_fingerprint: string }) =>
     mutating<Host>('/hosts/enroll', 'POST', body),
+  enrollExistingHostKey: (id: number, password: string) =>
+    mutating<Host>(`/hosts/${id}/ssh/enroll-key`, 'POST', { password }),
+  setHostAnsiblePassword: (id: number, password: string) =>
+    mutating<Host>(`/hosts/${id}/ansible-credentials`, 'PUT', { password }),
+  clearHostAnsiblePassword: (id: number) =>
+    mutating<Host>(`/hosts/${id}/ansible-credentials`, 'DELETE'),
   testHostSSH: (id: number) => mutating<SSHTest>(`/hosts/${id}/ssh/test`, 'POST'),
   acceptHostSSHFingerprint: (id: number, fingerprint: string) =>
     mutating<SSHTest>(`/hosts/${id}/ssh/accept-fingerprint`, 'POST', { fingerprint }),

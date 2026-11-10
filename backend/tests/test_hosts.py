@@ -6,10 +6,12 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from backend import models
 from backend.api import hosts as hosts_api
+from backend.db import session_scope
 from backend.errors import ForbiddenError
 from backend.schemas import SSHHostEnrollment
-from backend.services import ssh_enrollment_service, ssh_service
+from backend.services import credential_service, ssh_enrollment_service, ssh_service
 
 from .conftest import create_host
 
@@ -127,7 +129,10 @@ def test_ssh_test_requires_out_of_band_fingerprint_approval(
     monkeypatch.setattr(
         hosts_api.ssh_service,
         "scan_host_key",
-        lambda ip, port: (f"{ip} ssh-ed25519 AAAA", fingerprint),
+        lambda ip, port, expected_fingerprint=None: (
+            f"{ip} ssh-ed25519 AAAA",
+            fingerprint,
+        ),
     )
     monkeypatch.setattr(
         hosts_api.ssh_service,
@@ -157,7 +162,10 @@ def test_ssh_fingerprint_approval_requires_live_match(
     monkeypatch.setattr(
         hosts_api.ssh_service,
         "scan_host_key",
-        lambda ip, port: (f"{ip} ssh-ed25519 AAAA", fingerprint),
+        lambda ip, port, expected_fingerprint=None: (
+            f"{ip} ssh-ed25519 AAAA",
+            fingerprint,
+        ),
     )
 
     mismatch = client.post(
@@ -201,7 +209,10 @@ def test_ssh_test_uses_only_pinned_host_key(
     monkeypatch.setattr(
         hosts_api.ssh_service,
         "scan_host_key",
-        lambda ip, port: (known_hosts_entry, fingerprint),
+        lambda ip, port, expected_fingerprint=None: (
+            known_hosts_entry,
+            fingerprint,
+        ),
     )
     connection = {"known_hosts_entry": None}
 
@@ -348,7 +359,12 @@ def test_enrollment_verifies_host_and_installs_key_in_background(
     fingerprint = "SHA256:" + "H" * 43
     known_hosts_entry = "10.0.0.52 ssh-ed25519 AAAA"
     monkeypatch.setattr(
-        ssh_service, "scan_host_key", lambda ip, port: (known_hosts_entry, fingerprint)
+        ssh_service,
+        "scan_host_key",
+        lambda ip, port, expected_fingerprint=None: (
+            known_hosts_entry,
+            fingerprint,
+        ),
     )
     password_checks = []
     key_installs = []
@@ -387,6 +403,173 @@ def test_enrollment_verifies_host_and_installs_key_in_background(
     assert host["ssh_error"] is None
 
 
+def test_existing_host_can_enroll_ansible_key_with_temporary_password(
+    client: TestClient, csrf_headers, monkeypatch
+):
+    fingerprint = "SHA256:" + "N" * 43
+    response = create_host(
+        client,
+        csrf_headers(),
+        name="existing01",
+        ip="10.0.0.53",
+        ansible_user="toor",
+        ssh_fingerprint=fingerprint,
+    )
+    assert response.status_code == 201, response.text
+    host_id = response.json()["id"]
+    known_hosts_entry = "10.0.0.53 ssh-ed25519 AAAA"
+    password_checks = []
+    enrollments = []
+    monkeypatch.setattr(
+        ssh_service,
+        "scan_host_key",
+        lambda ip, port, expected_fingerprint=None: (
+            known_hosts_entry,
+            fingerprint,
+        ),
+    )
+    monkeypatch.setattr(
+        ssh_service,
+        "test_password_connection",
+        lambda **kwargs: password_checks.append(kwargs) or True,
+    )
+    monkeypatch.setattr(ssh_service, "public_key", lambda: "ssh-ed25519 AAAA")
+    monkeypatch.setattr(
+        ssh_enrollment_service,
+        "install_key_in_background",
+        lambda *args: enrollments.append(args),
+    )
+
+    response = client.post(
+        f"https://testserver/api/v1/hosts/{host_id}/ssh/enroll-key",
+        headers=csrf_headers(),
+        json={"password": "temporary-secret"},
+    )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["ssh_status"] == "enrolling"
+    assert "password" not in response.json()
+    assert password_checks[0]["password"] == "temporary-secret"
+    assert password_checks[0]["known_hosts_entry"] == known_hosts_entry
+    assert enrollments[0][0] == host_id
+    assert enrollments[0][2] == "temporary-secret"
+
+
+def test_host_password_is_validated_encrypted_and_used_as_ansible_credential(
+    client: TestClient, csrf_headers, monkeypatch
+):
+    fingerprint = "SHA256:" + "P" * 43
+    response = create_host(
+        client,
+        csrf_headers(),
+        name="password-host01",
+        ip="10.0.0.54",
+        ansible_user="toor",
+        ssh_fingerprint=fingerprint,
+    )
+    host_id = response.json()["id"]
+    known_hosts_entry = "10.0.0.54 ssh-rsa AAAA"
+    password_checks = []
+
+    def scan_host_key(ip, port, expected_fingerprint=None):
+        assert expected_fingerprint == fingerprint
+        return known_hosts_entry, fingerprint
+
+    monkeypatch.setattr(ssh_service, "scan_host_key", scan_host_key)
+    monkeypatch.setattr(
+        ssh_service,
+        "test_password_connection",
+        lambda **kwargs: password_checks.append(kwargs) or True,
+    )
+
+    response = client.put(
+        f"https://testserver/api/v1/hosts/{host_id}/ansible-credentials",
+        headers=csrf_headers(),
+        json={"password": "temporary-secret"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["ansible_password_configured"] is True
+    assert "temporary-secret" not in response.text
+    assert password_checks[0]["known_hosts_entry"] == known_hosts_entry
+    with session_scope() as db:
+        host = db.get(models.Host, host_id)
+        assert host is not None
+        assert host.ansible_password_encrypted != "temporary-secret"
+        assert credential_service.decrypt_password(host.ansible_password_encrypted) == (
+            "temporary-secret"
+        )
+
+    response = client.delete(
+        f"/api/v1/hosts/{host_id}/ansible-credentials",
+        headers=csrf_headers(),
+    )
+    assert response.status_code == 200
+    assert response.json()["ansible_password_configured"] is False
+
+
+def test_failed_password_validation_does_not_store_credentials(
+    client: TestClient, csrf_headers, monkeypatch
+):
+    fingerprint = "SHA256:" + "Q" * 43
+    response = create_host(
+        client,
+        csrf_headers(),
+        name="bad-password-host",
+        ip="10.0.0.55",
+        ansible_user="toor",
+        ssh_fingerprint=fingerprint,
+    )
+    host_id = response.json()["id"]
+    monkeypatch.setattr(
+        ssh_service,
+        "scan_host_key",
+        lambda ip, port, expected_fingerprint=None: (
+            f"{ip} ssh-rsa AAAA",
+            fingerprint,
+        ),
+    )
+    monkeypatch.setattr(ssh_service, "test_password_connection", lambda **kwargs: False)
+
+    response = client.put(
+        f"https://testserver/api/v1/hosts/{host_id}/ansible-credentials",
+        headers=csrf_headers(),
+        json={"password": "incorrect-password"},
+    )
+
+    assert response.status_code == 409
+    host = client.get(f"/api/v1/hosts/{host_id}").json()
+    assert host["ansible_password_configured"] is False
+
+
+def test_changing_ssh_user_clears_saved_password(client: TestClient, csrf_headers):
+    headers = csrf_headers()
+    response = create_host(
+        client,
+        headers,
+        name="credential-user-change",
+        ip="10.0.0.56",
+        ansible_user="toor",
+    )
+    host_id = response.json()["id"]
+    with session_scope() as db:
+        host = db.get(models.Host, host_id)
+        assert host is not None
+        host.ansible_password_encrypted = credential_service.encrypt_password(
+            "temporary-secret"
+        )
+        db.commit()
+
+    response = client.patch(
+        f"/api/v1/hosts/{host_id}",
+        headers=headers,
+        json={"ansible_user": "automation"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ansible_password_configured"] is False
+
+
 def test_failed_password_authentication_does_not_add_host(
     client: TestClient, csrf_headers, monkeypatch
 ):
@@ -394,7 +577,10 @@ def test_failed_password_authentication_does_not_add_host(
     monkeypatch.setattr(
         ssh_service,
         "scan_host_key",
-        lambda ip, port: (f"{ip} ssh-ed25519 AAAA", fingerprint),
+        lambda ip, port, expected_fingerprint=None: (
+            f"{ip} ssh-ed25519 AAAA",
+            fingerprint,
+        ),
     )
     monkeypatch.setattr(ssh_service, "test_password_connection", lambda **kwargs: False)
 
@@ -416,7 +602,10 @@ def test_root_password_authentication_recommends_non_root_account(
     monkeypatch.setattr(
         ssh_service,
         "scan_host_key",
-        lambda ip, port: (f"{ip} ssh-ed25519 AAAA", fingerprint),
+        lambda ip, port, expected_fingerprint=None: (
+            f"{ip} ssh-ed25519 AAAA",
+            fingerprint,
+        ),
     )
     monkeypatch.setattr(ssh_service, "test_password_connection", lambda **kwargs: False)
 
@@ -443,7 +632,10 @@ def test_enrollment_fingerprint_mismatch_never_uses_password(
     monkeypatch.setattr(
         ssh_service,
         "scan_host_key",
-        lambda ip, port: (f"{ip} ssh-ed25519 AAAA", live_fingerprint),
+        lambda ip, port, expected_fingerprint=None: (
+            f"{ip} ssh-ed25519 AAAA",
+            live_fingerprint,
+        ),
     )
     monkeypatch.setattr(
         ssh_service,

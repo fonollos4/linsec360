@@ -18,6 +18,7 @@ from ..security import get_current_user, require_roles
 from ..services import (
     audit_service,
     kpi_service,
+    stack_service,
     uyuni_service,
     wazuh_service,
 )
@@ -29,12 +30,21 @@ logger = logging.getLogger(__name__)
 @router.get("/status", response_model=IntegrationStatus)
 def status(user: models.User = Depends(get_current_user)) -> IntegrationStatus:
     settings = get_settings()
+    wazuh = IntegrationState(configured=settings.wazuh_configured)
+    uyuni = IntegrationState(configured=settings.uyuni_configured)
+    ansible = IntegrationState(
+        configured=bool(settings.ansible_playbook_bin),
+        available=shutil.which(settings.ansible_playbook_bin) is not None,
+    )
     return IntegrationStatus(
-        wazuh=IntegrationState(configured=settings.wazuh_configured),
-        uyuni=IntegrationState(configured=settings.uyuni_configured),
-        ansible=IntegrationState(
-            configured=bool(settings.ansible_playbook_bin),
-            available=shutil.which(settings.ansible_playbook_bin) is not None,
+        wazuh=wazuh,
+        uyuni=uyuni,
+        ansible=ansible,
+        stack=stack_service.components(
+            settings,
+            wazuh=wazuh,
+            uyuni=uyuni,
+            ansible=ansible,
         ),
     )
 

@@ -33,7 +33,11 @@ def install_key_in_background(
     ssh_status = "failed"
     ssh_error = "SSH key installation did not complete."
     try:
-        scanned = ssh_service.scan_host_key(ip, port)
+        scanned = ssh_service.scan_host_key(
+            ip,
+            port,
+            expected_fingerprint=expected_fingerprint,
+        )
         if scanned is None:
             ssh_error = (
                 "Unable to verify the SSH fingerprint; key installation aborted."

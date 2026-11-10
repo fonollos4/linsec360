@@ -544,6 +544,75 @@ def test_integrations_report_unconfigured_without_fabricating(
     assert response.json()["error"]["code"] == "integration_not_configured"
 
 
+def test_integration_status_summarizes_addresses_without_exposing_credentials(
+    client: TestClient, login, monkeypatch
+):
+    settings = SimpleNamespace(
+        wazuh_configured=True,
+        uyuni_configured=True,
+        ansible_playbook_bin="ansible-playbook",
+        wazuh_manager_address="",
+        effective_wazuh_manager_address="siem.example",
+        wazuh_manager_agent_port=1514,
+        wazuh_manager_enrollment_port=1515,
+        wazuh_api_url="https://api-user:secret@siem.example:55000/api",
+        wazuh_indexer_url="https://indexer.example:9200",
+        wazuh_dashboard_url="https://dashboard.example:5601",
+        uyuni_api_url="https://admin:secret@uyuni.example/rpc/api",
+        database_url="postgresql://db-user:secret@db.example:5432/linsec",
+        redis_url="",
+        ansible_ssh_private_key_path="/tmp/linsec-missing-key",
+    )
+    monkeypatch.setattr(integrations_api, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        integrations_api.stack_service,
+        "resolve_addresses",
+        lambda hostname: [f"192.0.2.{len(hostname or '')}"] if hostname else [],
+    )
+    monkeypatch.setattr(
+        integrations_api.stack_service,
+        "database_is_ready",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        integrations_api.shutil,
+        "which",
+        lambda binary: "/usr/bin/ansible-playbook",
+    )
+
+    login()
+    response = client.get("/api/v1/integrations/status")
+
+    assert response.status_code == 200
+    components = {item["key"]: item for item in response.json()["stack"]}
+    assert components["wazuh-api"]["endpoint"] == "https://siem.example:55000/api"
+    assert components["wazuh-api"]["addresses"] == ["192.0.2.12"]
+    assert components["wazuh-manager"]["configured"] is True
+    assert components["wazuh-manager"]["endpoint"].startswith("TCP siem.example:1514")
+    assert components["database"]["endpoint"] == "postgresql://db.example:5432"
+    assert "secret" not in response.text
+
+
+def test_manager_address_auto_detection_skips_docker_service_alias(monkeypatch):
+    from backend.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "wazuh_manager_address", "")
+    monkeypatch.setattr(
+        settings,
+        "wazuh_api_url",
+        "https://wazuh.manager:55000",
+    )
+    assert settings.effective_wazuh_manager_address == ""
+
+    monkeypatch.setattr(
+        settings,
+        "wazuh_api_url",
+        "https://siem.example:55000",
+    )
+    assert settings.effective_wazuh_manager_address == "siem.example"
+
+
 def test_wazuh_connection_test_reports_api_agent_count(
     client: TestClient, csrf_headers, monkeypatch
 ):

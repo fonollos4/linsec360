@@ -14,6 +14,7 @@ from ..db import get_db
 from ..errors import ConflictError, ForbiddenError, IntegrationUnavailable
 from ..schemas import (
     AgentOut,
+    AnsibleCredentialsRequest,
     HardeningCheckOut,
     HostCreate,
     HostImportOut,
@@ -27,11 +28,13 @@ from ..schemas import (
     SSHFingerprintScanOut,
     SSHFingerprintScanRequest,
     SSHHostEnrollment,
+    SSHKeyEnrollmentRequest,
     SSHPublicKeyOut,
     SSHTestOut,
 )
 from ..security import get_current_user, require_roles
 from ..services import (
+    credential_service,
     hardening_service,
     host_service,
     livepatch_service,
@@ -117,7 +120,11 @@ def enroll_host(
         db, name=host_payload.name, environment=host_payload.environment
     )
 
-    scanned = ssh_service.scan_host_key(host_payload.ip, host_payload.ansible_port)
+    scanned = ssh_service.scan_host_key(
+        host_payload.ip,
+        host_payload.ansible_port,
+        expected_fingerprint=payload.verified_fingerprint,
+    )
     if scanned is None:
         raise IntegrationUnavailable("unable to verify the current SSH fingerprint")
     known_hosts_entry, fingerprint = scanned
@@ -155,6 +162,162 @@ def enroll_host(
         user.id,
         password,
     )
+    return host_service.serialize(host)
+
+
+@router.post("/{host_id}/ssh/enroll-key", response_model=HostOut, status_code=202)
+def enroll_existing_host_ssh_key(
+    host_id: int,
+    payload: SSHKeyEnrollmentRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(require_roles("admin", "operator")),
+) -> HostOut:
+    _require_secure_enrollment_transport(request)
+    host = host_service.get_host(db, host_id)
+    if host.ansible_user == "root":
+        raise ConflictError(
+            "Root SSH password enrollment was refused. Use a non-root account "
+            "with sudo privileges."
+        )
+    if not host.ssh_fingerprint:
+        raise ConflictError(
+            "Approve the host's SSH fingerprint before installing the Ansible key"
+        )
+
+    scanned = ssh_service.scan_host_key(
+        host.ip,
+        host.ansible_port,
+        expected_fingerprint=host.ssh_fingerprint,
+    )
+    if scanned is None:
+        raise IntegrationUnavailable("unable to verify the current SSH fingerprint")
+    known_hosts_entry, fingerprint = scanned
+    if fingerprint != host.ssh_fingerprint:
+        raise ConflictError(
+            "SSH fingerprint changed; verify it again before entering credentials"
+        )
+
+    ssh_service.public_key()
+    password = payload.password.get_secret_value()
+    if not ssh_service.test_password_connection(
+        ip=host.ip,
+        port=host.ansible_port,
+        user=host.ansible_user,
+        password=password,
+        known_hosts_entry=known_hosts_entry,
+    ):
+        raise ConflictError(
+            "SSH authentication failed; check the user and temporary password."
+        )
+
+    host.ssh_status = "enrolling"
+    host.ssh_error = None
+    db.commit()
+    db.refresh(host)
+    background_tasks.add_task(
+        ssh_enrollment_service.install_key_in_background,
+        host.id,
+        user.id,
+        password,
+    )
+    return host_service.serialize(host)
+
+
+@router.put("/{host_id}/ansible-credentials", response_model=HostOut)
+def set_host_ansible_credentials(
+    host_id: int,
+    payload: AnsibleCredentialsRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(require_roles("admin", "operator")),
+) -> HostOut:
+    _require_secure_enrollment_transport(request)
+    host = host_service.get_host(db, host_id)
+    if host.ansible_user == "root":
+        raise ConflictError(
+            "Root password authentication is not supported; use a non-root "
+            "account with sudo privileges."
+        )
+    if not host.ssh_fingerprint:
+        raise ConflictError(
+            "Approve the host's SSH fingerprint before saving credentials"
+        )
+
+    scanned = ssh_service.scan_host_key(
+        host.ip,
+        host.ansible_port,
+        expected_fingerprint=host.ssh_fingerprint,
+    )
+    if scanned is None:
+        raise IntegrationUnavailable("unable to verify the current SSH fingerprint")
+    known_hosts_entry, fingerprint = scanned
+    if fingerprint != host.ssh_fingerprint:
+        raise ConflictError(
+            "SSH fingerprint changed; verify it again before saving credentials"
+        )
+
+    password = payload.password.get_secret_value()
+    encrypted_password = credential_service.encrypt_password(password)
+    if not ssh_service.test_password_connection(
+        ip=host.ip,
+        port=host.ansible_port,
+        user=host.ansible_user,
+        password=password,
+        known_hosts_entry=known_hosts_entry,
+    ):
+        raise ConflictError(
+            "SSH password authentication failed; credentials were not saved."
+        )
+
+    host.ansible_password_encrypted = encrypted_password
+    host.ssh_status = "reachable"
+    host.ssh_error = None
+    host.last_ssh_test_at = datetime.now(UTC)
+    db.commit()
+    db.refresh(host)
+
+    from ..services import audit_service
+
+    audit_service.record(
+        db,
+        actor=user,
+        action="host.ansible_credentials_set",
+        target_type="host",
+        target_id=host.id,
+        data={"authentication": "password", "sudo_password": "same"},
+        request=request,
+    )
+    db.commit()
+    return host_service.serialize(host)
+
+
+@router.delete("/{host_id}/ansible-credentials", response_model=HostOut)
+def clear_host_ansible_credentials(
+    host_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(require_roles("admin", "operator")),
+) -> HostOut:
+    host = host_service.get_host(db, host_id)
+    if host.ansible_password_encrypted is not None:
+        host.ansible_password_encrypted = None
+        db.commit()
+        db.refresh(host)
+
+        from ..services import audit_service
+
+        audit_service.record(
+            db,
+            actor=user,
+            action="host.ansible_credentials_cleared",
+            target_type="host",
+            target_id=host.id,
+            data={},
+            request=request,
+        )
+        db.commit()
     return host_service.serialize(host)
 
 
@@ -281,7 +444,11 @@ def accept_host_ssh_fingerprint(
     user: models.User = Depends(require_roles("admin")),
 ) -> SSHTestOut:
     host = host_service.get_host(db, host_id)
-    scanned = ssh_service.scan_host_key(host.ip, host.ansible_port)
+    scanned = ssh_service.scan_host_key(
+        host.ip,
+        host.ansible_port,
+        expected_fingerprint=payload.fingerprint,
+    )
     if scanned is None:
         raise ConflictError("unable to determine the SSH host fingerprint")
     _, current_fingerprint = scanned
@@ -324,7 +491,11 @@ def test_host_ssh(
     user: models.User = Depends(require_roles("admin", "operator")),
 ) -> SSHTestOut:
     host = host_service.get_host(db, host_id)
-    scanned = ssh_service.scan_host_key(host.ip, host.ansible_port)
+    scanned = ssh_service.scan_host_key(
+        host.ip,
+        host.ansible_port,
+        expected_fingerprint=host.ssh_fingerprint,
+    )
     if scanned is None:
         host.ssh_status = "failed"
         host.ssh_error = "Unable to scan SSH fingerprint; connection was not attempted"
@@ -393,13 +564,27 @@ def test_host_ssh(
             message="Fingerprint changed; SSH connection blocked",
         )
 
-    reachable, output, message = ssh_service.test_connection(
-        host_name=host.name,
-        ip=host.ip,
-        ansible_user=host.ansible_user,
-        ansible_port=host.ansible_port,
-        known_hosts_entry=known_hosts_entry,
-    )
+    if host.ansible_password_encrypted is not None:
+        password = credential_service.decrypt_password(
+            host.ansible_password_encrypted
+        )
+        reachable = ssh_service.test_password_connection(
+            ip=host.ip,
+            port=host.ansible_port,
+            user=host.ansible_user,
+            password=password,
+            known_hosts_entry=known_hosts_entry,
+        )
+        output = "SSH password authentication failed"
+        message = "SSH password authentication successful"
+    else:
+        reachable, output, message = ssh_service.test_connection(
+            host_name=host.name,
+            ip=host.ip,
+            ansible_user=host.ansible_user,
+            ansible_port=host.ansible_port,
+            known_hosts_entry=known_hosts_entry,
+        )
     host.last_ssh_test_at = datetime.now(UTC)
     host.ssh_status = "reachable" if reachable else "failed"
     host.ssh_error = None if reachable else output[:512]

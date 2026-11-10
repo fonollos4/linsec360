@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -15,6 +16,7 @@ TEST_ROOT = Path(tempfile.mkdtemp(prefix="linsec-tests-"))
 
 os.environ["LINSEC_ENVIRONMENT"] = "test"
 os.environ["LINSEC_SECRET_KEY"] = "test-secret-key-that-is-at-least-32-bytes"
+os.environ["LINSEC_CREDENTIAL_ENCRYPTION_KEY"] = Fernet.generate_key().decode("ascii")
 os.environ["LINSEC_AUTO_CREATE_TABLES"] = "true"
 os.environ["LINSEC_COOKIE_SECURE"] = "false"
 os.environ["LINSEC_REDIS_URL"] = ""
@@ -117,17 +119,23 @@ def create_host(
     environment: str = "production",
     security_level: str = "high",
     groups: list[str] | None = None,
+    ansible_user: str = "linsec-ansible",
+    ssh_fingerprint: str | None = None,
 ):
+    payload = {
+        "name": name,
+        "ip": ip,
+        "environment": environment,
+        "security_level": security_level,
+        "groups": groups or ["web"],
+        "ansible_user": ansible_user,
+    }
+    if ssh_fingerprint is not None:
+        payload["ssh_fingerprint"] = ssh_fingerprint
     return client.post(
         "/api/v1/hosts",
         headers=headers,
-        json={
-            "name": name,
-            "ip": ip,
-            "environment": environment,
-            "security_level": security_level,
-            "groups": groups or ["web"],
-        },
+        json=payload,
     )
 
 

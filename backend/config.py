@@ -11,9 +11,9 @@ import json
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     csrf_cookie_name: str = "linsec_csrf"
     cookie_secure: bool = False
     cookie_samesite: Literal["lax", "strict", "none"] = "lax"
+    credential_encryption_key: SecretStr | None = None
 
     database_url: str = f"sqlite:///{BASE_DIR / 'instance' / 'linsec.db'}"
     database_password: str = ""
@@ -75,7 +76,11 @@ class Settings(BaseSettings):
 
     # Wazuh API / indexer. Empty values mean "not configured"; the API then
     # returns explicit unknown/503 states instead of fabricated data.
+    wazuh_manager_address: str = ""
+    wazuh_manager_agent_port: int = Field(default=1514, ge=1, le=65535)
+    wazuh_manager_enrollment_port: int = Field(default=1515, ge=1, le=65535)
     wazuh_api_url: str = ""
+    wazuh_dashboard_url: str = ""
     wazuh_api_username: str = ""
     wazuh_api_password: str = ""
     wazuh_api_verify_tls: bool = True
@@ -132,6 +137,26 @@ class Settings(BaseSettings):
         )
 
     @property
+    def effective_wazuh_manager_address(self) -> str:
+        """Use an explicit agent endpoint, or a non-Docker API hostname."""
+        configured = self.wazuh_manager_address.strip()
+        if configured:
+            return configured
+        try:
+            hostname = urlsplit(self.wazuh_api_url).hostname
+        except ValueError:
+            return ""
+        if not hostname or hostname.lower() in {
+            "localhost",
+            "wazuh.manager",
+            "wazuh-manager",
+            "127.0.0.1",
+            "::1",
+        }:
+            return ""
+        return hostname
+
+    @property
     def uyuni_configured(self) -> bool:
         return bool(
             self.uyuni_api_url and self.uyuni_username and self.uyuni_password
@@ -163,6 +188,11 @@ class Settings(BaseSettings):
             if self.secret_key == "dev-only-change-me":
                 raise ValueError(
                     "LINSEC_SECRET_KEY must be set when LINSEC_ENVIRONMENT=production"
+                )
+            if self.credential_encryption_key is None:
+                raise ValueError(
+                    "LINSEC_CREDENTIAL_ENCRYPTION_KEY must be set when "
+                    "LINSEC_ENVIRONMENT=production"
                 )
             if self.cookie_secure is False:
                 raise ValueError(

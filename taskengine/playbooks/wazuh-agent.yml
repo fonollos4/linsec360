@@ -1,0 +1,48 @@
+---
+# Deploy and enroll Wazuh agents with the vendored role.
+#
+# Required extra vars:
+#   wazuh_manager_address: 10.0.0.5
+# Optional:
+#   wazuh_agent_version, wazuh_agent_groups, wazuh_registration_password
+#
+# The registration password should come from Ansible Vault or a secret manager,
+# never from a committed file.
+- name: Deploy the Wazuh agent
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    wazuh_manager_address: "{{ linsec_wazuh_manager_address | default('', true) }}"
+    wazuh_agent_groups: "{{ wazuh_agent_groups | default('linsec') }}"
+    wazuh_managers:
+      - address: "{{ wazuh_manager_address }}"
+        port: 1514
+        protocol: tcp
+        api_port: 55000
+        api_proto: https
+        api_user: "{{ wazuh_api_user | default('wazuh-wui') }}"
+        max_retries: 5
+        retry_interval: 5
+        register: false
+    wazuh_agent_enrollment:
+      enabled: "yes"
+      manager_address: "{{ wazuh_manager_address }}"
+      port: 1515
+      agent_name: "{{ inventory_hostname }}"
+      groups: "{{ wazuh_agent_groups }}"
+      agent_address: "{{ ansible_default_ipv4.address | default('') }}"
+      ssl_ciphers: HIGH:!ADH:!EXP:!MD5:!RC4:!3DES:!CAMELLIA:@STRENGTH
+
+  pre_tasks:
+    - name: Validate the Wazuh manager address
+      ansible.builtin.assert:
+        that:
+          - wazuh_manager_address | trim | length > 0
+        fail_msg: >-
+          Configure LINSEC_WAZUH_MANAGER_ADDRESS with the Wazuh manager IP or
+          DNS name reachable from the managed host.
+
+  roles:
+    - role: ansible-wazuh-agent

@@ -149,6 +149,7 @@ class HostOut(ORMModel):
     added_date: datetime
     ansible_user: str = "linsec-ansible"
     ansible_port: int = 22
+    ansible_password_configured: bool = False
     ssh_status: str = "pending"
     ssh_fingerprint: str | None = None
     ssh_error: str | None = None
@@ -217,6 +218,27 @@ class SSHHostEnrollment(HostCreate):
         ):
             raise ValueError("password must be a single line")
         return value
+
+
+class HostPasswordRequest(BaseModel):
+    password: SecretStr = Field(min_length=1, max_length=256)
+
+    @field_validator("password")
+    @classmethod
+    def _password_single_line(cls, value: SecretStr) -> SecretStr:
+        if any(
+            character in value.get_secret_value() for character in ("\x00", "\r", "\n")
+        ):
+            raise ValueError("password must be a single line")
+        return value
+
+
+class SSHKeyEnrollmentRequest(HostPasswordRequest):
+    pass
+
+
+class AnsibleCredentialsRequest(HostPasswordRequest):
+    pass
 
 
 class SSHFingerprintScanOut(BaseModel):
@@ -585,10 +607,21 @@ class IntegrationState(BaseModel):
     detail: str | None = None
 
 
+class StackComponentState(BaseModel):
+    key: str
+    name: str
+    configured: bool
+    reachable: bool | None = None
+    endpoint: str | None = None
+    addresses: list[str] = Field(default_factory=list)
+    detail: str | None = None
+
+
 class IntegrationStatus(BaseModel):
     wazuh: IntegrationState
     uyuni: IntegrationState
     ansible: IntegrationState
+    stack: list[StackComponentState] = Field(default_factory=list)
 
 
 class AuditOut(ORMModel):

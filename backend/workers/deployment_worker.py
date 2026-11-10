@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+import shlex
 import subprocess
 import tempfile
 from datetime import UTC, datetime
@@ -14,9 +16,19 @@ import yaml
 from .. import models
 from ..config import get_settings
 from ..db import session_scope
-from ..services import inventory_service, playbook_service
+from ..errors import IntegrationUnavailable
+from ..services import (
+    credential_service,
+    inventory_service,
+    playbook_service,
+    ssh_service,
+)
 
 logger = logging.getLogger(__name__)
+
+
+class DeploymentPreflightError(RuntimeError):
+    """A deployment was blocked before Ansible could connect to any host."""
 
 
 def _now() -> datetime:
@@ -34,6 +46,98 @@ def _write_extra_vars(values: dict, directory: Path) -> Path:
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         yaml.safe_dump(values, handle)
     return Path(path)
+
+
+def _write_known_hosts(
+    db,
+    environment_name: str,
+    target_names: list[str],
+    directory: Path,
+) -> Path:
+    environment = inventory_service.get_environment(db, environment_name)
+    hosts = (
+        db.query(models.Host)
+        .filter(
+            models.Host.environment_id == environment.id,
+            models.Host.name.in_(target_names),
+        )
+        .all()
+    )
+    hosts_by_name = {host.name: host for host in hosts}
+    entries: list[str] = []
+    for name in target_names:
+        host = hosts_by_name.get(name)
+        if host is None:
+            raise DeploymentPreflightError(
+                f"target host {name} was not found in the environment"
+            )
+        if not host.ssh_fingerprint:
+            raise DeploymentPreflightError(
+                f"target host {name} has no approved SSH fingerprint; "
+                "verify and approve it before deployment"
+            )
+        scanned = ssh_service.scan_host_key(
+            host.ip,
+            host.ansible_port,
+            expected_fingerprint=host.ssh_fingerprint,
+        )
+        if scanned is None:
+            raise DeploymentPreflightError(
+                f"could not scan the SSH fingerprint for {name}"
+            )
+        known_hosts_entry, fingerprint = scanned
+        if fingerprint != host.ssh_fingerprint:
+            raise DeploymentPreflightError(
+                f"SSH fingerprint for {name} changed; verify and approve it "
+                "before deployment"
+            )
+        entries.append(known_hosts_entry)
+
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    descriptor, path = tempfile.mkstemp(
+        prefix="linsec-known-hosts-",
+        dir=directory,
+    )
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(entries) + "\n")
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
+        Path(path).unlink(missing_ok=True)
+        raise
+    return Path(path)
+
+
+def _deployment_passwords(
+    db,
+    environment_name: str,
+    target_names: list[str],
+) -> dict[str, str]:
+    environment = inventory_service.get_environment(db, environment_name)
+    hosts = (
+        db.query(models.Host)
+        .filter(
+            models.Host.environment_id == environment.id,
+            models.Host.name.in_(target_names),
+        )
+        .all()
+    )
+    passwords: dict[str, str] = {}
+    for host in hosts:
+        if host.ansible_password_encrypted is None:
+            continue
+        try:
+            passwords[host.name] = credential_service.decrypt_password(
+                host.ansible_password_encrypted
+            )
+        except IntegrationUnavailable as exc:
+            raise DeploymentPreflightError(
+                f"stored Ansible credentials for {host.name} could not be decrypted; "
+                "verify LINSEC_CREDENTIAL_ENCRYPTION_KEY"
+            ) from exc
+    return passwords
 
 
 def _ansible_environment(settings) -> dict[str, str]:
@@ -147,19 +251,45 @@ def run_deployment(deployment_id: str) -> None:
         try:
             if not target_names:
                 raise RuntimeError("deployment has no target hosts")
+            try:
+                ssh_service.ensure_keypair()
+            except (IntegrationUnavailable, OSError, subprocess.SubprocessError) as exc:
+                raise DeploymentPreflightError(
+                    "Configured Ansible SSH private key is unavailable or invalid; "
+                    "check its path and permissions, or run "
+                    "config/scripts/generate-ansible-key.sh for the default key"
+                ) from exc
+            known_hosts_path = _write_known_hosts(
+                db,
+                deployment.environment_name,
+                target_names,
+                settings.log_dir,
+            )
+            temporary_paths.append(known_hosts_path)
             playbook = playbook_service.get_or_raise(db, deployment.playbook_name)
             playbook_path = playbook_service.materialize(
                 playbook, settings.playbooks_dir
             )
-            inventory_path = inventory_service.write_inventory(
-                db, deployment.environment_name
+            inventory_path = inventory_service.write_deployment_inventory(
+                db,
+                deployment.environment_name,
+                _deployment_passwords(
+                    db,
+                    deployment.environment_name,
+                    target_names,
+                ),
+                Path(tempfile.gettempdir()),
             )
+            temporary_paths.append(inventory_path)
             settings.artifacts_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
             env_vars_path = _write_extra_vars(
                 {
                     "linsec_env": deployment.environment_name,
                     "linsec_config_dir": str(settings.config_dir),
                     "linsec_artifact_dir": str(settings.artifacts_dir),
+                    "linsec_wazuh_manager_address": (
+                        settings.effective_wazuh_manager_address
+                    ),
                     **deployment.extra_vars,
                 },
                 settings.log_dir,
@@ -179,6 +309,11 @@ def run_deployment(deployment_id: str) -> None:
                 check_mode=bool(deployment.extra_vars.get("linsec_check_mode")),
             )
             environment = _ansible_environment(settings)
+            environment["ANSIBLE_HOST_KEY_CHECKING"] = "True"
+            environment["ANSIBLE_SSH_ARGS"] = (
+                f"-o UserKnownHostsFile={shlex.quote(str(known_hosts_path))} "
+                "-o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null"
+            )
 
             _append_log(
                 log_path,
@@ -210,6 +345,14 @@ def run_deployment(deployment_id: str) -> None:
                 error_message = (
                     f"ansible-playbook exited with code {process.returncode}"
                 )
+        except DeploymentPreflightError as exc:
+            success = False
+            error_message = str(exc)
+            logger.warning("deployment %s blocked by preflight: %s", deployment_id, exc)
+            try:
+                _append_log(log_path, f"\nerror={error_message}\n")
+            except OSError:
+                logger.exception("could not write preflight failure to %s", log_path)
         except subprocess.TimeoutExpired as exc:
             success = False
             error_message = (

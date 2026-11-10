@@ -65,31 +65,34 @@ def ensure_keypair() -> tuple[Path, Path]:
         _derive_public_key(private_key)
         return private_key, public_key
 
+    if private_key.exists():
+        _derive_public_key(private_key)
+        return private_key, public_key
+
     ssh_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(ssh_dir, 0o700)
 
-    if not private_key.exists():
-        subprocess.run(
-            [
-                "ssh-keygen",
-                "-q",
-                "-t",
-                "ed25519",
-                "-a",
-                "64",
-                "-N",
-                "",
-                "-C",
-                "linsec-ansible",
-                "-f",
-                str(private_key),
-            ],
-            check=True,
-            timeout=30,
-        )
-        os.chmod(private_key, 0o600)
-        if public_key.exists():
-            os.chmod(public_key, 0o644)
+    subprocess.run(
+        [
+            "ssh-keygen",
+            "-q",
+            "-t",
+            "ed25519",
+            "-a",
+            "64",
+            "-N",
+            "",
+            "-C",
+            "linsec-ansible",
+            "-f",
+            str(private_key),
+        ],
+        check=True,
+        timeout=30,
+    )
+    os.chmod(private_key, 0o600)
+    if public_key.exists():
+        os.chmod(public_key, 0o644)
     _derive_public_key(private_key)
     return private_key, public_key
 
@@ -102,7 +105,11 @@ def public_key() -> str:
         raise IntegrationUnavailable("unable to provision the Ansible SSH key") from exc
 
 
-def scan_host_key(ip: str, port: int) -> tuple[str, str] | None:
+def scan_host_key(
+    ip: str,
+    port: int,
+    expected_fingerprint: str | None = None,
+) -> tuple[str, str] | None:
     try:
         result = subprocess.run(
             ["ssh-keyscan", "-T", "5", "-p", str(port), "-t", "ed25519,rsa", ip],
@@ -114,6 +121,7 @@ def scan_host_key(ip: str, port: int) -> tuple[str, str] | None:
         return None
     if result.returncode != 0:
         return None
+    scanned_keys: dict[str, tuple[str, str]] = {}
     for line in result.stdout.splitlines():
         if not line or line.startswith("#"):
             continue
@@ -129,8 +137,18 @@ def scan_host_key(ip: str, port: int) -> tuple[str, str] | None:
             base64.b64encode(hashlib.sha256(blob).digest()).decode("ascii").rstrip("=")
         )
         host = ip if port == 22 else f"[{ip}]:{port}"
-        return f"{host} {parts[1]} {parts[2]}", f"SHA256:{digest}"
-    return None
+        scanned_keys[parts[1]] = (
+            f"{host} {parts[1]} {parts[2]}",
+            f"SHA256:{digest}",
+        )
+    if expected_fingerprint:
+        for entry in scanned_keys.values():
+            if entry[1] == expected_fingerprint:
+                return entry
+    for key_type in ("ssh-ed25519", "ssh-rsa"):
+        if key_type in scanned_keys:
+            return scanned_keys[key_type]
+    return next(iter(scanned_keys.values()), None)
 
 
 def scan_fingerprint(ip: str, port: int) -> str | None:

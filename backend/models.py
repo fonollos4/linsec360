@@ -133,6 +133,7 @@ class Host(TimestampMixin, Base):
         String(64), nullable=False, default="linsec-ansible"
     )
     ansible_port: Mapped[int] = mapped_column(Integer, nullable=False, default=22)
+    ansible_password_encrypted: Mapped[str | None] = mapped_column(Text)
     ssh_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     ssh_fingerprint: Mapped[str | None] = mapped_column(String(128))
     ssh_error: Mapped[str | None] = mapped_column(String(512))

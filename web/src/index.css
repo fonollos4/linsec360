@@ -889,6 +889,8 @@ textarea.ssh-key {
 .integration-help { margin: 12px 0 18px; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .integration-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
 .integration-grid .panel + .panel { margin-top: 0; }
+.section-title { margin: 24px 0 12px; color: var(--ink); font-size: 15px; font-weight: 700; }
+.stack-summary .panel-heading small, .stack-summary .stat-line strong { overflow-wrap: anywhere; text-align: right; }
 .integrations-detail { margin-top: 14px; padding: 10px 12px; border-radius: 8px; background: var(--surface-soft); border: 1px dashed var(--line-strong); color: var(--muted); font-size: 11.5px; line-height: 1.55; overflow-wrap: anywhere; }
 
 /* ------------------------------------------------------------------ */

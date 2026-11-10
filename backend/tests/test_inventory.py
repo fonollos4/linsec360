@@ -9,7 +9,11 @@ from backend.config import get_settings
 from backend.db import session_scope
 from backend.errors import NotFoundError
 from backend.services import inventory_service
-from backend.services.inventory_service import build_inventory, write_inventory
+from backend.services.inventory_service import (
+    build_inventory,
+    write_deployment_inventory,
+    write_inventory,
+)
 
 
 def _seed() -> None:
@@ -81,6 +85,49 @@ def test_build_inventory_uses_configured_ssh_key_path(
         ]
         == str(key_path)
     )
+
+
+def test_build_inventory_uses_password_for_ssh_and_sudo_without_key(
+    client, monkeypatch, tmp_path: Path
+):
+    _seed()
+    key_path = tmp_path / "ansible-key"
+    monkeypatch.setattr(
+        inventory_service,
+        "get_settings",
+        lambda: SimpleNamespace(ansible_ssh_private_key_path=key_path),
+    )
+    with session_scope() as db:
+        hosts = db.query(models.Host).order_by(models.Host.name).all()
+        inventory = build_inventory(hosts, {"web01": "temporary-secret"})
+
+    web_host = inventory["all"]["children"]["web"]["hosts"]["web01"]
+    database_host = inventory["all"]["children"]["database"]["hosts"]["db01"]
+    assert web_host["ansible_password"] == "temporary-secret"
+    assert web_host["ansible_become_password"] == "temporary-secret"
+    assert "ansible_private_key_file" not in web_host
+    assert database_host["ansible_private_key_file"] == str(key_path)
+
+
+def test_write_deployment_inventory_keeps_password_file_private(client, tmp_path: Path):
+    _seed()
+    with session_scope() as db:
+        path = write_deployment_inventory(
+            db,
+            "production",
+            {"web01": "temporary-secret"},
+            tmp_path,
+        )
+        persistent_path = write_inventory(db, "production")
+
+    assert path.stat().st_mode & 0o777 == 0o600
+    content = yaml.safe_load(path.read_text())
+    web_host = content["all"]["children"]["web"]["hosts"]["web01"]
+    assert web_host["ansible_password"] == "temporary-secret"
+    persistent_content = yaml.safe_load(persistent_path.read_text())
+    persistent_web_host = persistent_content["all"]["children"]["web"]["hosts"]["web01"]
+    assert "ansible_password" not in persistent_web_host
+    assert "temporary-secret" not in persistent_path.read_text()
 
 
 def test_write_inventory_creates_private_yaml(client):
