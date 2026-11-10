@@ -680,6 +680,7 @@ def test_stack_configuration_is_persisted_and_resettable(
         "wazuh_indexer_url": "https://indexer.example:9200",
         "wazuh_dashboard_url": "https://dashboard.example:5601",
         "uyuni_api_url": "https://uyuni.example/rpc/api",
+        "uyuni_server": "uyuni.example",
     }
 
     invalid_payload = {**payload, "wazuh_api_url": "https://user:secret@siem.example"}
@@ -778,6 +779,24 @@ def test_manager_address_auto_detection_skips_docker_service_alias(monkeypatch):
         "https://siem.example:55000",
     )
     assert settings.effective_wazuh_manager_address == "siem.example"
+
+
+def test_uyuni_server_auto_detection_skips_docker_service_alias(monkeypatch):
+    from backend.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "uyuni_server", "")
+    monkeypatch.setattr(settings, "uyuni_api_url", "http://uyuni/rpc/api")
+    assert settings.effective_uyuni_server == ""
+
+    monkeypatch.setattr(settings, "uyuni_api_url", "http://localhost/rpc/api")
+    assert settings.effective_uyuni_server == ""
+
+    monkeypatch.setattr(settings, "uyuni_api_url", "https://uyuni.example/rpc/api")
+    assert settings.effective_uyuni_server == "uyuni.example"
+
+    monkeypatch.setattr(settings, "uyuni_server", "patch.example")
+    assert settings.effective_uyuni_server == "patch.example"
 
 
 def test_wazuh_vulnerabilities_use_inventory_endpoint(monkeypatch):

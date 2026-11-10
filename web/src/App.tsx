@@ -1773,6 +1773,9 @@ function StackConfigurationEditor({ onSaved }: { onSaved: () => Promise<void> })
           <label>URL XML-RPC Uyuni
             <input type="url" value={form.uyuni_api_url} placeholder="https://uyuni/rpc/api" onChange={(event) => update('uyuni_api_url', event.target.value)} />
           </label>
+          <label>Adresse Uyuni (agents)
+            <input type="text" value={form.uyuni_server} placeholder="Nom d’hôte joignable par les hôtes cibles" onChange={(event) => update('uyuni_server', event.target.value)} />
+          </label>
         </div>
         {error && <div className="alert error">{error instanceof Error ? error.message : 'Impossible d’enregistrer la configuration.'}</div>}
         {(save.isSuccess || reset.isSuccess) && <div className="alert success" role="status">Configuration enregistrée et appliquée par LinSec360.</div>}

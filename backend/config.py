@@ -94,6 +94,7 @@ class Settings(BaseSettings):
 
     # Uyuni patch/repository control plane.
     uyuni_api_url: str = ""
+    uyuni_server: str = ""
     uyuni_username: str = ""
     uyuni_password: str = ""
     uyuni_verify_tls: bool = True
@@ -161,6 +162,25 @@ class Settings(BaseSettings):
         return bool(
             self.uyuni_api_url and self.uyuni_username and self.uyuni_password
         )
+
+    @property
+    def effective_uyuni_server(self) -> str:
+        """Agent-facing Uyuni host, or a non-Docker hostname from the API URL."""
+        configured = self.uyuni_server.strip()
+        if configured:
+            return configured
+        try:
+            hostname = urlsplit(self.uyuni_api_url).hostname
+        except ValueError:
+            return ""
+        if not hostname or hostname.lower() in {
+            "localhost",
+            "uyuni",
+            "127.0.0.1",
+            "::1",
+        }:
+            return ""
+        return hostname
 
     @field_validator("cors_origins", mode="before")
     @classmethod

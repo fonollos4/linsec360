@@ -104,6 +104,7 @@ export interface StackConfiguration {
   wazuh_indexer_url: string
   wazuh_dashboard_url: string
   uyuni_api_url: string
+  uyuni_server: string
 }
 export interface StackComponentState {
   key: string

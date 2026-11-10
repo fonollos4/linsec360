@@ -19,12 +19,26 @@
     # never reference openscap_profile itself: that would recurse forever.
     openscap_profile: "{{ 'cis_rhel.xml' if ansible_os_family == 'RedHat' else 'cis_ubuntu.xml' }}"
     openscap_backend: ssg
-    openscap_tailoring_file: "{{ openscap_config_dir }}/openscap/profiles/{{ openscap_profile }}"
-    openscap_profile_id: >-
-      {{ 'xccdf_org.ssgproject.content_profile_cis'
-         if ansible_os_family == 'RedHat'
-         else 'xccdf_org.ssgproject.content_profile_cis_level1_server' }}
     openscap_results_dir: /var/tmp/linsec-openscap
+    # The tailoring file lives on the controller; oscap runs on the target, so
+    # it must be staged there before evaluation.
+    openscap_tailoring_source: "{{ openscap_config_dir }}/openscap/profiles/{{ openscap_profile }}"
+    openscap_tailoring_file: "{{ openscap_results_dir }}/{{ openscap_profile }}"
+    # The tailoring document points at the benchmark it extends. That hint must
+    # name the data stream installed on the target (for example rhel9 vs
+    # rhel10), otherwise oscap rejects the tailoring file as inapplicable.
+    openscap_tailoring_content: >-
+      {{ lookup('ansible.builtin.file', openscap_tailoring_source)
+         | regex_replace('<xccdf:benchmark href="[^"]*"',
+                         '<xccdf:benchmark href="' ~ openscap_ssg_datastream ~ '"')
+      }}
+    # When --tailoring-file is used, --profile must name a profile defined in
+    # the tailoring document, not the base profile in the data stream.
+    openscap_profile_id: >-
+      {{ lookup('ansible.builtin.file', openscap_tailoring_source)
+         | regex_findall('<xccdf:Profile\s+id="([^"]+)"')
+         | first
+         | default('') }}
     openscap_result_path: "{{ openscap_results_dir }}/{{ inventory_hostname }}-arf.xml"
     openscap_ingest_url: ""
     openscap_api_token: ""
@@ -99,6 +113,31 @@
         owner: root
         group: root
         mode: "0700"
+
+    - name: Validate that the tailoring profile exists on the controller
+      ansible.builtin.assert:
+        that:
+          - openscap_tailoring_source is file
+        fail_msg: >-
+          Tailoring profile {{ openscap_tailoring_source }} was not found on the
+          controller. Check the configured profile directory.
+      delegate_to: localhost
+      become: false
+
+    - name: Copy the tailoring profile to the target
+      ansible.builtin.copy:
+        content: "{{ openscap_tailoring_content }}"
+        dest: "{{ openscap_tailoring_file }}"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Validate that the tailoring profile defines a profile id
+      ansible.builtin.assert:
+        that:
+          - openscap_profile_id | length > 0
+        fail_msg: >-
+          No xccdf:Profile id was found in {{ openscap_tailoring_source }}.
 
     - name: Run the OpenSCAP XCCDF evaluation
       ansible.builtin.command: >-

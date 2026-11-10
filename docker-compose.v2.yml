@@ -48,6 +48,8 @@ x-backend-environment: &backend-environment
   LINSEC_WAZUH_INDEXER_VERIFY_TLS: ${LINSEC_WAZUH_INDEXER_VERIFY_TLS:-true}
   LINSEC_WAZUH_CA_BUNDLE: /opt/linsec/certs/wazuh/root-ca.pem
   LINSEC_UYUNI_API_URL: ${LINSEC_UYUNI_API_URL:-http://uyuni/rpc/api}
+  # Hostname that managed hosts use to reach Uyuni (never the Docker alias).
+  LINSEC_UYUNI_SERVER: ${LINSEC_UYUNI_SERVER:-}
   LINSEC_UYUNI_USERNAME: ${UYUNI_ADMIN_USERNAME:-${LINSEC_UYUNI_USERNAME:-admin}}
   LINSEC_UYUNI_PASSWORD: ${UYUNI_ADMIN_PASSWORD:-${LINSEC_UYUNI_PASSWORD:-}}
   LINSEC_UYUNI_VERIFY_TLS: ${LINSEC_UYUNI_VERIFY_TLS:-true}

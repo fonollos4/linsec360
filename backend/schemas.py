@@ -645,6 +645,7 @@ class StackConfiguration(BaseModel):
     wazuh_indexer_url: str = Field(max_length=1024)
     wazuh_dashboard_url: str = Field(max_length=1024)
     uyuni_api_url: str = Field(max_length=1024)
+    uyuni_server: str = Field(default="", max_length=253)
 
 
 class StackConfigurationUpdate(StackConfiguration):
@@ -654,6 +655,7 @@ class StackConfigurationUpdate(StackConfiguration):
         "wazuh_indexer_url",
         "wazuh_dashboard_url",
         "uyuni_api_url",
+        "uyuni_server",
     )
     @classmethod
     def _trim_config_values(cls, value: str) -> str:

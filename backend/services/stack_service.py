@@ -202,6 +202,7 @@ def components(
     manager_addresses = resolve_addresses(manager_hostname)
     if manager_hostname and not manager_addresses:
         manager_detail = f"{manager_detail} Le DNS n'a renvoyé aucune adresse."
+    uyuni_server = getattr(settings, "effective_uyuni_server", "")
     result = [
         _database_component(settings),
         _redis_component(settings),
@@ -240,6 +241,17 @@ def components(
             configured=uyuni.configured,
             reachable=uyuni.reachable,
             detail=uyuni.detail,
+        ),
+        StackComponentState(
+            key="uyuni-server",
+            name="Uyuni server (agents)",
+            configured=bool(uyuni_server),
+            endpoint=uyuni_server or None,
+            detail=(
+                "Adresse configurée pour l'enregistrement des agents."
+                if uyuni_server
+                else "Adresse du serveur Uyuni non configurée pour les agents."
+            ),
         ),
     ]
 

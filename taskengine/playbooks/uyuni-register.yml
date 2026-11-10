@@ -15,6 +15,9 @@
   gather_facts: true
 
   vars:
+    # Worker injects the agent-facing server from the stack settings; an
+    # explicit extra var (uyuni_server=...) still takes precedence.
+    uyuni_server: "{{ linsec_uyuni_server | default('', true) }}"
     uyuni_bootstrap_url: "https://{{ uyuni_server }}/pub/bootstrap/bootstrap.sh"
     uyuni_activation_key: ""
     uyuni_bootstrap_script: /var/tmp/linsec-uyuni-bootstrap.sh
@@ -23,11 +26,10 @@
     - name: Validate that the Uyuni server was provided
       ansible.builtin.assert:
         that:
-          - uyuni_server is defined
           - uyuni_server | length > 0
         fail_msg: >-
-          uyuni_server is required; pass -e uyuni_server=<hostname> or set it
-          in the deployment extra vars.
+          uyuni_server is required. Configure "Adresse Uyuni (agents)" in the
+          stack settings, or pass -e uyuni_server=<hostname>.
 
     - name: Download the Uyuni bootstrap script
       ansible.builtin.get_url:
@@ -36,15 +38,17 @@
         owner: root
         group: root
         mode: "0700"
+        # Uyuni serves its own CA; the script installs it before registering.
+        validate_certs: false
       when: not ansible_check_mode
 
     - name: Register the host with Uyuni
-      ansible.builtin.command: >-
-        sh {{ uyuni_bootstrap_script }}
-        --server {{ uyuni_server }}
-        {% if uyuni_activation_key | length > 0 %}
-        --activationkey {{ uyuni_activation_key }}
-        {% endif %}
+      ansible.builtin.command: "sh {{ uyuni_bootstrap_script }}"
+      environment:
+        # The generated bootstrap script reads these environment variables;
+        # it does not accept --server / --activationkey flags.
+        MGR_SERVER_HOSTNAME: "{{ uyuni_server }}"
+        ACTIVATION_KEYS: "{{ uyuni_activation_key }}"
       register: uyuni_registration
       changed_when: "'already registered' not in (uyuni_registration.stdout | default(''))"
       failed_when:
