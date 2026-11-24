@@ -50,6 +50,8 @@ x-backend-environment: &backend-environment
   LINSEC_UYUNI_API_URL: ${LINSEC_UYUNI_API_URL:-http://uyuni/rpc/api}
   # Hostname that managed hosts use to reach Uyuni (never the Docker alias).
   LINSEC_UYUNI_SERVER: ${LINSEC_UYUNI_SERVER:-}
+  # Keep this aligned with the published Uyuni HTTPS port.
+  LINSEC_UYUNI_SERVER_PORT: ${UYUNI_HTTPS_PORT:-443}
   LINSEC_UYUNI_USERNAME: ${UYUNI_ADMIN_USERNAME:-${LINSEC_UYUNI_USERNAME:-admin}}
   LINSEC_UYUNI_PASSWORD: ${UYUNI_ADMIN_PASSWORD:-${LINSEC_UYUNI_PASSWORD:-}}
   LINSEC_UYUNI_VERIFY_TLS: ${LINSEC_UYUNI_VERIFY_TLS:-true}

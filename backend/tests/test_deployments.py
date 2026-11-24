@@ -138,6 +138,12 @@ def test_worker_runs_ansible_and_updates_state(
                 value="uyuni.example",
             )
         )
+        db.add(
+            models.RuntimeSetting(
+                key="uyuni_server_port",
+                value="8443",
+            )
+        )
 
     def fake_run(command, **kwargs):
         captured["command"] = command
@@ -192,6 +198,7 @@ def test_worker_runs_ansible_and_updates_state(
     assert captured["extra_vars"]["linsec_wazuh_manager_agent_port"] == 1614
     assert captured["extra_vars"]["linsec_wazuh_manager_enrollment_port"] == 1615
     assert captured["extra_vars"]["linsec_uyuni_server"] == "uyuni.example"
+    assert captured["extra_vars"]["linsec_uyuni_server_port"] == 8443
 
     response = client.get(f"/api/v1/deployments/{deployment_id}/log")
     assert response.status_code == 200

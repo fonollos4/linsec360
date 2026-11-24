@@ -96,6 +96,89 @@ def test_openscap_playbook_discovers_a_distribution_specific_data_stream():
     assert "ssg-rhel9-ds.xml" not in repr(play)
 
 
+def test_openscap_playbook_stages_tailoring_file_on_the_target():
+    playbook_path = (
+        Path(__file__).resolve().parents[2]
+        / "taskengine"
+        / "playbooks"
+        / "openscap-scan.yml"
+    )
+    play = yaml.safe_load(playbook_path.read_text(encoding="utf-8"))[0]
+    tasks = play["tasks"]
+
+    copy_task = next(
+        task
+        for task in tasks
+        if task.get("name") == "Copy the tailoring profile to the target"
+    )
+    copy_module = copy_task["ansible.builtin.copy"]
+    assert "content" in copy_module
+    assert "src" not in copy_module
+    assert copy_module["dest"] == "{{ openscap_tailoring_file }}"
+
+    # The benchmark href must match the data stream installed on the target
+    # (rhel9 vs rhel10), otherwise oscap treats the tailoring as inapplicable.
+    assert "openscap_ssg_datastream" in play["vars"]["openscap_tailoring_content"]
+
+    scan_task = next(
+        task
+        for task in tasks
+        if task.get("name") == "Run the OpenSCAP XCCDF evaluation"
+    )
+    command = scan_task["ansible.builtin.command"]
+    assert "--tailoring-file {{ openscap_tailoring_file }}" in command
+    assert "{{ openscap_tailoring_source }}" not in command
+
+
+def test_uyuni_register_playbook_uses_the_worker_injected_server():
+    playbook_path = (
+        Path(__file__).resolve().parents[2]
+        / "taskengine"
+        / "playbooks"
+        / "uyuni-register.yml"
+    )
+    play = yaml.safe_load(playbook_path.read_text(encoding="utf-8"))[0]
+
+    assert play["vars"]["uyuni_server"] == (
+        "{{ linsec_uyuni_server | default('', true) }}"
+    )
+    assert "linsec_uyuni_server_port" in play["vars"]["uyuni_server_port"]
+    assert "8443" not in repr(play)
+    register_task = next(
+        task
+        for task in play["tasks"]
+        if task.get("name") == "Register the host with Uyuni"
+    )
+    assert register_task["environment"] == {
+        "MGR_SERVER_HOSTNAME": "{{ uyuni_server }}",
+        "ACTIVATION_KEYS": "{{ uyuni_activation_key }}",
+    }
+    # The generated bootstrap script resets CLIENT_REPOS_ROOT itself, so it
+    # must be patched in the script instead of passed through the environment.
+    assert "CLIENT_REPOS_ROOT" not in register_task["environment"]
+    task_names = {task.get("name") for task in play["tasks"]}
+    assert (
+        "Make the bootstrap repository URL use the configured HTTPS port" in task_names
+    )
+    assert "Make the bootstrap script reuse the pre-installed Salt bundle" in task_names
+    # Uyuni does not always host a bootstrap repository; fall back to the
+    # official public client tools repository for RedHat-family targets.
+    fallback_repo = play["vars"]["uyuni_client_tools_repo"]
+    assert "download.opensuse.org" in fallback_repo
+    assert "ansible_distribution_major_version" in fallback_repo
+    assert "ansible_os_family == 'RedHat'" in fallback_repo
+    repo_task = next(
+        task
+        for task in play["tasks"]
+        if task.get("name") == "Add the public Uyuni client tools repository"
+    )
+    assert repo_task["ansible.builtin.yum_repository"]["baseurl"] == (
+        "{{ uyuni_client_tools_repo }}"
+    )
+    # The generated bootstrap script reads env vars, not CLI flags.
+    assert "--server" not in register_task["ansible.builtin.command"]
+
+
 def test_bundled_playbook_vars_do_not_reference_themselves():
     """A play var defined in terms of itself recurses until Ansible gives up.
 
@@ -681,6 +764,7 @@ def test_stack_configuration_is_persisted_and_resettable(
         "wazuh_dashboard_url": "https://dashboard.example:5601",
         "uyuni_api_url": "https://uyuni.example/rpc/api",
         "uyuni_server": "uyuni.example",
+        "uyuni_server_port": 8443,
     }
 
     invalid_payload = {**payload, "wazuh_api_url": "https://user:secret@siem.example"}
@@ -707,6 +791,7 @@ def test_stack_configuration_is_persisted_and_resettable(
     components = {item["key"]: item for item in response.json()["stack"]}
     assert components["wazuh-manager"]["endpoint"].startswith("TCP 192.0.2.40:1514")
     assert "1516" in components["wazuh-manager"]["endpoint"]
+    assert components["uyuni-server"]["endpoint"] == "uyuni.example:8443"
 
     response = client.delete(
         "/api/v1/integrations/config",

@@ -95,6 +95,7 @@ class Settings(BaseSettings):
     # Uyuni patch/repository control plane.
     uyuni_api_url: str = ""
     uyuni_server: str = ""
+    uyuni_server_port: int = 443
     uyuni_username: str = ""
     uyuni_password: str = ""
     uyuni_verify_tls: bool = True

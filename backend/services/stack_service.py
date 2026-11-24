@@ -203,6 +203,12 @@ def components(
     if manager_hostname and not manager_addresses:
         manager_detail = f"{manager_detail} Le DNS n'a renvoyé aucune adresse."
     uyuni_server = getattr(settings, "effective_uyuni_server", "")
+    uyuni_server_port = getattr(settings, "uyuni_server_port", 443)
+    uyuni_server_endpoint = (
+        f"{uyuni_server}:{uyuni_server_port}"
+        if uyuni_server and uyuni_server_port != 443
+        else uyuni_server
+    )
     result = [
         _database_component(settings),
         _redis_component(settings),
@@ -246,7 +252,7 @@ def components(
             key="uyuni-server",
             name="Uyuni server (agents)",
             configured=bool(uyuni_server),
-            endpoint=uyuni_server or None,
+            endpoint=uyuni_server_endpoint or None,
             detail=(
                 "Adresse configurée pour l'enregistrement des agents."
                 if uyuni_server

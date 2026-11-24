@@ -646,6 +646,7 @@ class StackConfiguration(BaseModel):
     wazuh_dashboard_url: str = Field(max_length=1024)
     uyuni_api_url: str = Field(max_length=1024)
     uyuni_server: str = Field(default="", max_length=253)
+    uyuni_server_port: int = Field(default=443, ge=1, le=65535)
 
 
 class StackConfigurationUpdate(StackConfiguration):

@@ -19,8 +19,15 @@ SETTING_FIELDS = (
     "wazuh_dashboard_url",
     "uyuni_api_url",
     "uyuni_server",
+    "uyuni_server_port",
 )
-PORT_FIELDS = frozenset({"wazuh_manager_agent_port", "wazuh_manager_enrollment_port"})
+PORT_FIELDS = frozenset(
+    {
+        "wazuh_manager_agent_port",
+        "wazuh_manager_enrollment_port",
+        "uyuni_server_port",
+    }
+)
 
 
 def effective_settings(db: Session, settings: Settings | None = None) -> Settings:
@@ -64,6 +71,7 @@ def read(db: Session) -> StackConfiguration:
         wazuh_dashboard_url=_safe_endpoint(settings.wazuh_dashboard_url),
         uyuni_api_url=_safe_endpoint(settings.uyuni_api_url),
         uyuni_server=settings.uyuni_server,
+        uyuni_server_port=settings.uyuni_server_port,
     )
 
 

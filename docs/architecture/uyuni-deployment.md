@@ -59,12 +59,30 @@ LINSEC_UYUNI_USERNAME=
 LINSEC_UYUNI_PASSWORD=
 LINSEC_UYUNI_VERIFY_TLS=true
 LINSEC_UYUNI_TIMEOUT_SECONDS=30
+# Agent-facing address and HTTPS port used by uyuni-register.yml.
+LINSEC_UYUNI_SERVER=uyuni.example.internal
+LINSEC_UYUNI_SERVER_PORT=443
 ```
 
 `LINSEC_UYUNI_API_URL` must point directly to the XML-RPC gateway, usually
 `https://uyuni.example.internal/rpc/api`. LinSec360 uses XML-RPC methods
 including `auth.login`, `system.listSystems`, `system.getChannels`, and
 `system.getRelevantErrata`.
+
+`LINSEC_UYUNI_SERVER` is the address written into the Salt minion
+configuration, so it must be reachable from the managed hosts and must never be
+the Docker service alias (`uyuni`). When Uyuni runs under Compose,
+`LINSEC_UYUNI_SERVER_PORT` defaults to `UYUNI_HTTPS_PORT` (`8443` in the default
+stack). If the Uyuni server has not synced client tools bootstrap repositories
+yet, `uyuni-register.yml` installs `venv-salt-minion` from the official public
+Uyuni client tools repository for RedHat-family targets; override the source
+with the `uyuni_client_tools_repo` extra var or set it to `""` to require that
+Uyuni serves the bootstrap repository itself.
+
+When no activation key is configured, the bootstrap script still connects the
+minion but Uyuni lists its key under **Salt > Keys** as unaccepted. Accept the
+key (or provide `uyuni_activation_key`) before expecting the host to appear as
+a managed system.
 
 The `/api/v1/integrations` pages report Uyuni as `not configured`, `reachable`,
 or `unavailable`; they must not report success without an actual connection.

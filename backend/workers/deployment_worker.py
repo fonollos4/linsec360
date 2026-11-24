@@ -298,6 +298,7 @@ def run_deployment(deployment_id: str) -> None:
                         settings.wazuh_manager_enrollment_port
                     ),
                     "linsec_uyuni_server": settings.effective_uyuni_server,
+                    "linsec_uyuni_server_port": settings.uyuni_server_port,
                     **deployment.extra_vars,
                 },
                 settings.log_dir,
