@@ -43,14 +43,29 @@ def _fernet() -> Fernet:
     return fernet_for_key(key.get_secret_value())
 
 
+def encrypt_secret(secret: str) -> str:
+    """Encrypt any operator-supplied secret with the platform Fernet key."""
+    return _fernet().encrypt(secret.encode("utf-8")).decode("ascii")
+
+
+def decrypt_secret(encrypted_secret: str) -> str:
+    try:
+        return _fernet().decrypt(encrypted_secret.encode("ascii")).decode("utf-8")
+    except (InvalidToken, UnicodeDecodeError, ValueError) as exc:
+        raise IntegrationUnavailable(
+            "stored secret could not be decrypted; check the encryption key"
+        ) from exc
+
+
 def encrypt_password(password: str) -> str:
-    return _fernet().encrypt(password.encode("utf-8")).decode("ascii")
+    return encrypt_secret(password)
 
 
 def decrypt_password(encrypted_password: str) -> str:
     try:
-        return _fernet().decrypt(encrypted_password.encode("ascii")).decode("utf-8")
-    except (InvalidToken, UnicodeDecodeError, ValueError) as exc:
+        return decrypt_secret(encrypted_password)
+    except IntegrationUnavailable as exc:
+        # Keep the host-specific message used by the credential recovery CLI.
         raise IntegrationUnavailable(
             "stored host credentials could not be decrypted; check the encryption key"
         ) from exc

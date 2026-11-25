@@ -157,6 +157,23 @@ def test_notifications_are_colored_toasts_with_history() -> None:
     assert "notify(" in app_source
 
 
+def test_settings_manage_distro_openscap_profiles_and_native_tool_keys() -> None:
+    app_source = APP_TSX.read_text(encoding="utf-8")
+    api_source = API_TS.read_text(encoding="utf-8")
+
+    assert "OpenScapProfilesEditor" in app_source
+    assert "NativeToolSecretsEditor" in app_source
+    assert "/compliance/profiles/catalog" in api_source
+    assert "/compliance/profiles/refresh" in api_source
+    assert "/integrations/native-secrets" in api_source
+    assert "ubuntu_pro_token" in api_source
+    assert "Télécharger depuis la distro" in app_source
+    assert "Token Ubuntu Pro / Livepatch" in app_source
+    assert 'type="password"' in app_source
+    assert "Configuré" in app_source
+    assert "Effacer" in app_source
+
+
 def test_patch_actions_explain_and_track_their_deployments() -> None:
     source = APP_TSX.read_text(encoding="utf-8")
 

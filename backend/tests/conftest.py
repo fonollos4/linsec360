@@ -26,6 +26,7 @@ os.environ["LINSEC_TASKENGINE_DIR"] = str(TEST_ROOT / "taskengine")
 os.environ["LINSEC_PLAYBOOK_DIR"] = str(TEST_ROOT / "var" / "playbooks")
 os.environ["LINSEC_INVENTORY_DIR"] = str(TEST_ROOT / "var" / "inventories")
 os.environ["LINSEC_BUNDLED_PLAYBOOKS_DIR"] = str(TEST_ROOT / "taskengine" / "playbooks")
+os.environ["LINSEC_OPENSCAP_PROFILE_DIR"] = str(TEST_ROOT / "openscap" / "profiles")
 
 shutil.copytree(
     REPO_ROOT / "taskengine" / "playbooks",
@@ -33,6 +34,16 @@ shutil.copytree(
     dirs_exist_ok=True,
 )
 (TEST_ROOT / "logs").mkdir(parents=True, exist_ok=True)
+(TEST_ROOT / "openscap" / "profiles").mkdir(parents=True, exist_ok=True)
+for _profile in ("cis_ubuntu.xml", "cis_rhel.xml"):
+    _target = TEST_ROOT / "openscap" / "profiles" / _profile
+    if not _target.exists():
+        _target.write_text(
+            '<?xml version="1.0"?><xccdf:Tailoring '
+            'xmlns:xccdf="http://checklists.nist.gov/xccdf/1.2" '
+            'id="xccdf_linsec_tailoring_test"/>',
+            encoding="utf-8",
+        )
 
 from backend import models  # noqa: E402
 from backend.db import create_all, reset_database, session_scope  # noqa: E402

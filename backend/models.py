@@ -97,6 +97,18 @@ class RuntimeSetting(TimestampMixin, Base):
     )
 
 
+class PlatformSecret(TimestampMixin, Base):
+    """Encrypted credentials for native platform tools (livepatch, etc.)."""
+
+    __tablename__ = "platform_secrets"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+
 class Environment(TimestampMixin, Base):
     __tablename__ = "environments"
 

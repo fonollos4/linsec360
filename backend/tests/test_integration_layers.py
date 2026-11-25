@@ -130,6 +130,66 @@ def test_openscap_playbook_stages_tailoring_file_on_the_target():
     assert "{{ openscap_tailoring_source }}" not in command
 
 
+def test_openscap_playbook_supports_distro_data_streams():
+    playbook_path = (
+        Path(__file__).resolve().parents[2]
+        / "taskengine"
+        / "playbooks"
+        / "openscap-scan.yml"
+    )
+    play = yaml.safe_load(playbook_path.read_text(encoding="utf-8"))[0]
+    tasks = play["tasks"]
+
+    assert "openscap_profile_source" in play["vars"]
+    assert "openscap_is_tailoring" in play["vars"]
+    assert "openscap_default_profile_id" in play["vars"]
+    assert "xccdf_org.ssgproject.content_profile_cis_server_l1" in repr(play)
+    assert any(
+        "openscap_is_tailoring" in str(task.get("when", "")) for task in tasks
+    )
+    assert any(
+        "openscap_datastream_file" in str(task.get("ansible.builtin.copy", {}))
+        for task in tasks
+    )
+    scan_tasks = [
+        task
+        for task in tasks
+        if task.get("name", "").startswith("Run the OpenSCAP XCCDF evaluation")
+    ]
+    assert len(scan_tasks) == 2
+    assert any(
+        "{{ openscap_datastream_file }}" in str(task["ansible.builtin.command"])
+        for task in scan_tasks
+    )
+
+
+def test_livepatch_playbook_uses_native_platform_tokens():
+    playbook_path = (
+        Path(__file__).resolve().parents[2]
+        / "taskengine"
+        / "playbooks"
+        / "livepatch-check.yml"
+    )
+    play = yaml.safe_load(playbook_path.read_text(encoding="utf-8"))[0]
+
+    assert play["vars"]["ubuntu_pro_token"] == ""
+    assert play["vars"]["canonical_livepatch_token"] == ""
+    commands = [
+        task.get("ansible.builtin.command")
+        for task in play["tasks"]
+        if "ansible.builtin.command" in task
+    ]
+    assert any(
+        "pro attach {{ ubuntu_pro_token }}" in str(command) for command in commands
+    )
+    assert any(
+        "canonical-livepatch enable {{ canonical_livepatch_token }}"
+        in str(command)
+        for command in commands
+    )
+    assert any(task.get("no_log") is True for task in play["tasks"])
+
+
 def test_uyuni_registration_playbook_is_retired():
     root = Path(__file__).resolve().parents[2] / "taskengine"
     assert not (root / "playbooks" / "uyuni-register.yml").exists()
