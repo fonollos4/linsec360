@@ -119,37 +119,38 @@ def test_unknown_host_returns_404(client: TestClient, login):
     assert response.json()["error"]["code"] == "not_found"
 
 
-def test_ssh_test_requires_out_of_band_fingerprint_approval(
+def test_ssh_test_does_not_scan_or_require_fingerprints(
     client: TestClient, csrf_headers, monkeypatch
 ):
     headers = csrf_headers()
     created = create_host(client, headers)
     host_id = created.json()["id"]
-    fingerprint = "SHA256:" + "A" * 43
     monkeypatch.setattr(
         hosts_api.ssh_service,
         "scan_host_key",
-        lambda ip, port, expected_fingerprint=None: (
-            f"{ip} ssh-ed25519 AAAA",
-            fingerprint,
+        lambda *args, **kwargs: pytest.fail(
+            "SSH fingerprint scanning must not be part of host tests"
         ),
     )
     monkeypatch.setattr(
         hosts_api.ssh_service,
         "test_connection",
-        lambda **kwargs: pytest.fail(
-            "SSH auth must not run before fingerprint approval"
-        ),
+        lambda **kwargs: (True, "pong", "Reachable"),
+    )
+    monkeypatch.setattr(
+        hosts_api.ssh_service,
+        "detect_distribution",
+        lambda **kwargs: "Ubuntu",
     )
 
     response = client.post(f"/api/v1/hosts/{host_id}/ssh/test", headers=headers)
 
     assert response.status_code == 200
-    assert response.json()["reachable"] is False
-    assert response.json()["ssh_status"] == "fingerprint_pending"
-    assert response.json()["fingerprint"] == fingerprint
+    assert response.json()["reachable"] is True
+    assert response.json()["ssh_status"] == "reachable"
+    assert response.json()["detected_os"] == "Ubuntu"
     host = client.get(f"/api/v1/hosts/{host_id}").json()
-    assert host["ssh_fingerprint"] is None
+    assert host["os"] == "Ubuntu"
 
 
 def test_ssh_fingerprint_approval_requires_live_match(
@@ -188,7 +189,7 @@ def test_ssh_fingerprint_approval_requires_live_match(
     )
 
 
-def test_ssh_test_uses_only_pinned_host_key(
+def test_ssh_test_does_not_pass_pinned_host_keys(
     client: TestClient, csrf_headers, monkeypatch
 ):
     headers = csrf_headers()
@@ -205,27 +206,21 @@ def test_ssh_test_uses_only_pinned_host_key(
     )
     assert created.status_code == 201
     host_id = created.json()["id"]
-    known_hosts_entry = "10.0.0.11 ssh-ed25519 AAAA"
-    monkeypatch.setattr(
-        hosts_api.ssh_service,
-        "scan_host_key",
-        lambda ip, port, expected_fingerprint=None: (
-            known_hosts_entry,
-            fingerprint,
-        ),
-    )
-    connection = {"known_hosts_entry": None}
+    connection = {}
 
     def fake_connection(**kwargs):
-        connection["known_hosts_entry"] = kwargs["known_hosts_entry"]
+        connection.update(kwargs)
         return True, "pong", "Reachable"
 
     monkeypatch.setattr(hosts_api.ssh_service, "test_connection", fake_connection)
+    monkeypatch.setattr(
+        hosts_api.ssh_service, "detect_distribution", lambda **kwargs: None
+    )
     response = client.post(f"/api/v1/hosts/{host_id}/ssh/test", headers=headers)
 
     assert response.status_code == 200
     assert response.json()["reachable"] is True
-    assert connection["known_hosts_entry"] == known_hosts_entry
+    assert "known_hosts_entry" not in connection
 
 
 def test_bulk_host_import_adds_metadata_without_credentials(
@@ -265,9 +260,7 @@ def test_bulk_host_import_adds_metadata_without_credentials(
     assert rejected.status_code == 422
 
 
-def test_ansible_ssh_test_pins_known_hosts_and_enables_checking(
-    monkeypatch, tmp_path: Path
-):
+def test_ansible_ssh_test_disables_host_key_checking(monkeypatch, tmp_path: Path):
     private_key = tmp_path / "id_ed25519"
     private_key.touch()
     public_key = tmp_path / "id_ed25519.pub"
@@ -280,39 +273,33 @@ def test_ansible_ssh_test_pins_known_hosts_and_enables_checking(
     def fake_run(command, **kwargs):
         environment = kwargs["env"]
         ssh_args = shlex.split(environment["ANSIBLE_SSH_ARGS"])
-        known_hosts_argument = next(
-            arg for arg in ssh_args if arg.startswith("UserKnownHostsFile=")
-        )
-        known_hosts_path = Path(known_hosts_argument.split("=", 1)[1])
         inventory_path = Path(command[2])
-        captured["known_hosts"] = known_hosts_path.read_text(encoding="utf-8").strip()
         captured["checking"] = environment["ANSIBLE_HOST_KEY_CHECKING"]
-        captured["strict"] = "StrictHostKeyChecking=yes" in ssh_args
+        captured["strict"] = "StrictHostKeyChecking=no" in ssh_args
+        captured["user_hosts"] = "UserKnownHostsFile=/dev/null" in ssh_args
         captured["global_hosts"] = "GlobalKnownHostsFile=/dev/null" in ssh_args
         captured["inventory"] = inventory_path.read_text(encoding="utf-8")
-        captured["temporary_paths"] = (known_hosts_path, inventory_path)
+        captured["inventory_path"] = inventory_path
         return SimpleNamespace(returncode=0, stdout="pong", stderr="")
 
     monkeypatch.setattr(ssh_service.subprocess, "run", fake_run)
-    known_hosts_entry = "10.0.0.40 ssh-ed25519 AAAA"
 
     reachable, output, message = ssh_service.test_connection(
         host_name="test01",
         ip="10.0.0.40",
         ansible_user="linsec-ansible",
         ansible_port=22,
-        known_hosts_entry=known_hosts_entry,
     )
 
     assert reachable is True
     assert output == "pong"
     assert message == "Reachable"
-    assert captured["known_hosts"] == known_hosts_entry
-    assert captured["checking"] == "true"
+    assert captured["checking"] == "False"
     assert captured["strict"] is True
+    assert captured["user_hosts"] is True
     assert captured["global_hosts"] is True
     assert "ansible_private_key_file" in captured["inventory"]
-    assert all(not path.exists() for path in captured["temporary_paths"])
+    assert not captured["inventory_path"].exists()
 
 
 def _enrollment_payload(
@@ -798,3 +785,76 @@ def test_key_installation_is_idempotent_and_sets_private_permissions(
     assert "grep -Fqx" in remote_command
     assert "chmod 700 ~/.ssh" in remote_command
     assert "chmod 600 ~/.ssh/authorized_keys" in remote_command
+
+
+def test_precreate_connection_test_detects_os_without_fingerprint_scan(
+    client: TestClient, csrf_headers, monkeypatch
+):
+    headers = csrf_headers()
+    monkeypatch.setattr(
+        hosts_api.ssh_service,
+        "scan_host_key",
+        lambda *args, **kwargs: pytest.fail("fingerprint scan must not run"),
+    )
+    monkeypatch.setattr(
+        hosts_api.ssh_service,
+        "test_connection",
+        lambda **kwargs: (True, "pong", "Reachable"),
+    )
+    monkeypatch.setattr(
+        hosts_api.ssh_service,
+        "detect_distribution",
+        lambda **kwargs: "Rocky",
+    )
+    response = client.post(
+        "/api/v1/hosts/test-connection",
+        headers=headers,
+        json={"name": "candidate01", "ip": "10.0.0.77"},
+    )
+    assert response.status_code == 200
+    assert response.json()["reachable"] is True
+    assert response.json()["detected_os"] == "Rocky"
+    assert client.get("/api/v1/hosts").json() == []
+
+
+def test_ssh_key_reference_is_persisted_and_exported_to_inventory(
+    client: TestClient, csrf_headers
+):
+    from backend.services import inventory_service
+
+    headers = csrf_headers()
+    created = client.post(
+        "/api/v1/hosts",
+        headers=headers,
+        json={
+            "name": "keyref01",
+            "ip": "10.0.0.78",
+            "environment": "production",
+            "ssh_key_reference": "prod-service-key",
+        },
+    )
+    assert created.status_code == 201
+    assert created.json()["ssh_key_reference"] == "prod-service-key"
+
+    updated = client.patch(
+        f"/api/v1/hosts/{created.json()['id']}",
+        headers=headers,
+        json={"ssh_key_reference": "rotation-key"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["ssh_key_reference"] == "rotation-key"
+
+    with session_scope() as db:
+        host = db.query(models.Host).filter(models.Host.name == "keyref01").one()
+        inventory = inventory_service.build_inventory([host])
+        host_vars = inventory["all"]["children"]["ungrouped"]["hosts"]["keyref01"]
+        assert host_vars["linsec_ssh_key_reference"] == "rotation-key"
+
+
+def test_terminal_websocket_requires_authentication(client: TestClient):
+    from starlette.websockets import WebSocketDisconnect
+
+    with pytest.raises(WebSocketDisconnect) as caught:
+        with client.websocket_connect("/api/v1/hosts/1/terminal/ws"):
+            pass
+    assert caught.value.code == 4401

@@ -57,6 +57,7 @@ def serialize(host: models.Host) -> HostOut:
         added_date=host.added_date,
         ansible_user=host.ansible_user,
         ansible_port=host.ansible_port,
+        ssh_key_reference=host.ssh_key_reference,
         ansible_password_configured=host.ansible_password_encrypted is not None,
         ssh_status=host.ssh_status,
         ssh_fingerprint=host.ssh_fingerprint,
@@ -135,6 +136,7 @@ def create_host(
         groups=_get_or_create_groups(db, payload.groups),
         ansible_user=payload.ansible_user,
         ansible_port=payload.ansible_port,
+        ssh_key_reference=payload.ssh_key_reference,
         ssh_fingerprint=payload.ssh_fingerprint,
     )
     db.add(host)
@@ -189,6 +191,8 @@ def update_host(
         host.ansible_user = payload.ansible_user
     if payload.ansible_port is not None:
         host.ansible_port = payload.ansible_port
+    if payload.ssh_key_reference is not None:
+        host.ssh_key_reference = payload.ssh_key_reference
     if payload.groups is not None:
         host.groups = _get_or_create_groups(db, payload.groups)
     if ssh_target_changed or ssh_user_changed:

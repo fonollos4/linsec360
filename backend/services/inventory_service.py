@@ -31,6 +31,7 @@ def build_inventory(
                 "ansible_user": host.ansible_user,
                 "ansible_port": host.ansible_port,
                 "ansible_private_key_file": private_key_path,
+                "linsec_ssh_key_reference": host.ssh_key_reference,
                 "linsec_security_level": host.security_level,
             }
             password = (passwords_by_name or {}).get(host.name)

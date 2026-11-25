@@ -16,6 +16,7 @@ from . import (
     operations,
     patching,
     playbooks,
+    terminal,
     tokens,
 )
 
@@ -23,6 +24,7 @@ api_router = APIRouter()
 api_router.include_router(auth.router)
 api_router.include_router(tokens.router)
 api_router.include_router(hosts.router)
+api_router.include_router(terminal.router)
 api_router.include_router(playbooks.router)
 api_router.include_router(deployments.router)
 api_router.include_router(kpis.router)

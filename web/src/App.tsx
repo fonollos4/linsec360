@@ -23,6 +23,7 @@ import {
   Settings as SettingsIcon,
   ShieldAlert,
   ShieldCheck,
+  Terminal,
   TriangleAlert,
   UserRound,
   type LucideIcon,
@@ -34,9 +35,7 @@ import {
   type Alert,
   type Deployment,
   type Host,
-  type HostEnrollmentInput,
   type PatchFinding,
-  type Playbook,
   type PlaybookDetail,
   type IntegrationState,
   type StackConfiguration,
@@ -78,8 +77,6 @@ const navGroups: Array<{ label: string; items: NavItem[] }> = [
 ]
 
 const hostIdentifier = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/
-const sshFingerprint = /^SHA256:[A-Za-z0-9+/]{43}$/
-const hostCsvColumns = ['name', 'ip', 'environment', 'security_level', 'groups', 'ansible_user', 'ansible_port', 'password']
 
 const statusLabels: Record<string, string> = {
   success: 'Succès',
@@ -220,83 +217,122 @@ function parseCsv(text: string): string[][] {
   return rows
 }
 
-function parseHostCsv(text: string): HostEnrollmentInput[] {
-  const rows = parseCsv(text)
-  if (!rows.length) throw new Error('Le fichier CSV est vide.')
-  if (rows.length > 26) throw new Error('Maximum 25 hôtes par import sécurisé.')
-  const headers = rows[0].map((value, index) =>
-    (index === 0 ? value.replace(/^\uFEFF/, '') : value).trim().toLowerCase(),
-  )
-  if (new Set(headers).size !== headers.length) throw new Error('En-têtes CSV dupliqués.')
-  const unsupported = headers.filter((header) => !hostCsvColumns.includes(header))
-  if (unsupported.length) throw new Error(`Colonnes non acceptées : ${unsupported.join(', ')}.`)
-  const required = ['name', 'ip', 'environment', 'password']
-  const missing = required.filter((header) => !headers.includes(header))
-  if (missing.length) throw new Error(`Colonnes obligatoires manquantes : ${missing.join(', ')}.`)
-
-  const importedKeys = new Set<string>()
-  return rows.slice(1).map((cells, rowIndex) => {
-    const rowNumber = rowIndex + 2
-    if (cells.length !== headers.length) throw new Error(`Ligne ${rowNumber} : nombre de colonnes invalide.`)
-    const values = Object.fromEntries(headers.map((header, index) => [header, cells[index].trim()]))
-    const name = values.name ?? ''
-    const ip = values.ip ?? ''
-    const environment = values.environment ?? ''
-    const ansibleUser = values.ansible_user || 'linsec-ansible'
-    const securityLevel = values.security_level || 'high'
-    const password = values.password ?? ''
-    const portText = values.ansible_port || '22'
-    const port = Number(portText)
-    const groups = (values.groups ?? '').split(';').map((group) => group.trim()).filter(Boolean)
-
-    if (!hostIdentifier.test(name) || !hostIdentifier.test(environment) || !hostIdentifier.test(ansibleUser)) {
-      throw new Error(`Ligne ${rowNumber} : nom, environnement ou utilisateur SSH invalide.`)
-    }
-    const octets = ip.split('.')
-    if (octets.length !== 4 || octets.some((octet) => !/^(0|[1-9]\d{0,2})$/.test(octet) || Number(octet) > 255)) {
-      throw new Error(`Ligne ${rowNumber} : adresse IPv4 invalide.`)
-    }
-    if (!['low', 'medium', 'high', 'critical'].includes(securityLevel)) {
-      throw new Error(`Ligne ${rowNumber} : niveau de sécurité invalide.`)
-    }
-    if (!Number.isInteger(port) || port < 1 || port > 65535) {
-      throw new Error(`Ligne ${rowNumber} : port SSH invalide.`)
-    }
-    if (!password || password.length > 256 || password.includes('\0') || password.includes('\r') || password.includes('\n')) {
-      throw new Error(`Ligne ${rowNumber} : mot de passe vide, trop long ou invalide.`)
-    }
-    if (groups.some((group) => !hostIdentifier.test(group))) {
-      throw new Error(`Ligne ${rowNumber} : groupe invalide.`)
-    }
-    const uniqueKey = `${environment}\0${name}`
-    if (importedKeys.has(uniqueKey)) throw new Error(`Ligne ${rowNumber} : hôte dupliqué dans le CSV.`)
-    importedKeys.add(uniqueKey)
-
-    return {
-      name,
-      ip,
-      environment,
-      security_level: securityLevel,
-      groups,
-      ansible_user: ansibleUser,
-      ansible_port: port,
-      password,
-    }
-  })
-}
-
-type HostEnrollmentRow = HostEnrollmentInput & {
+type BulkHostRow = {
   key: string
-  fingerprint: string | null
-  verifiedFingerprint: string
-  scanError: string
-  status: string
-  message: string
+  name: string
+  ip: string
+  environment: string
+  security_level: string
+  groups: string[]
+  ansible_user: string
+  ansible_port: number
+  ssh_key_reference: string
+  valid: boolean
+  selected: boolean
+  error: string
 }
 
-type EnrollmentBatchSummary = {
-  hosts: Array<{ name: string; environment: string; status: string; message: string }>
+type BulkSummary = {
+  imported: Array<{ name: string; environment: string; message: string }>
+  failed: Array<{ name: string; environment: string; message: string }>
   deployments: Array<{ environment: string; id?: string; error?: string }>
+}
+
+const defaultBulkOptions = {
+  environment: 'production',
+  security_level: 'high',
+  ansible_user: 'linsec-ansible',
+  ansible_port: 22,
+  ssh_key_reference: 'linsec-ansible',
+}
+
+function asGroupList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((group) => String(group).trim()).filter(Boolean)
+  if (typeof value !== 'string') return []
+  return value.split(/[;,]/).map((group) => group.trim()).filter(Boolean)
+}
+
+function validateBulkRow(row: BulkHostRow, seen: Set<string>): string {
+  const errors: string[] = []
+  if (!hostIdentifier.test(row.name)) errors.push('nom invalide')
+  if (!/^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/.test(row.ip)) errors.push('IPv4 invalide')
+  if (!hostIdentifier.test(row.environment)) errors.push('environnement invalide')
+  if (!hostIdentifier.test(row.ansible_user)) errors.push('utilisateur SSH invalide')
+  if (!['low', 'medium', 'high', 'critical'].includes(row.security_level)) errors.push('niveau invalide')
+  if (!Number.isInteger(row.ansible_port) || row.ansible_port < 1 || row.ansible_port > 65535) errors.push('port SSH invalide')
+  if (row.groups.some((group) => !hostIdentifier.test(group))) errors.push('groupe invalide')
+  const uniqueKey = `${row.environment}\0${row.name}`
+  if (seen.has(uniqueKey)) errors.push('doublon')
+  seen.add(uniqueKey)
+  return errors.length ? errors.join(', ') : ''
+}
+
+function parseBulkHosts(text: string, defaults: typeof defaultBulkOptions): BulkHostRow[] {
+  const trimmed = text.trim()
+  if (!trimmed) return []
+  const candidates: Array<Record<string, unknown>> = []
+
+  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+    const parsed = JSON.parse(trimmed) as unknown
+    const entries = Array.isArray(parsed)
+      ? parsed
+      : (parsed as { hosts?: unknown }).hosts ?? []
+    if (!Array.isArray(entries)) throw new Error('Le JSON doit contenir une liste d’hôtes.')
+    for (const entry of entries) {
+      if (!entry || typeof entry !== 'object') throw new Error('Entrée JSON invalide.')
+      candidates.push(entry as Record<string, unknown>)
+    }
+  } else if (trimmed.includes(',')) {
+    const rows = parseCsv(trimmed)
+    const first = rows[0].map((value, index) =>
+      (index === 0 ? value.replace(/^\uFEFF/, '') : value).trim().toLowerCase(),
+    )
+    const hasHeader = first.includes('name') || first.includes('ip') || first.includes('hostname')
+    if (hasHeader) {
+      for (const cells of rows.slice(1)) {
+        const values = Object.fromEntries(first.map((header, index) => [header, (cells[index] ?? '').trim()]))
+        candidates.push(values)
+      }
+    } else {
+      for (const cells of rows) {
+        candidates.push({
+          hostname: (cells[0] ?? '').trim(),
+          ip: (cells[1] ?? '').trim(),
+          ansible_user: (cells[2] ?? '').trim() || defaults.ansible_user,
+          groups: (cells[3] ?? '').trim(),
+          environment: (cells[4] ?? '').trim() || defaults.environment,
+        })
+      }
+    }
+  } else {
+    for (const line of trimmed.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)) {
+      candidates.push({ hostname: line, ip: line, environment: defaults.environment })
+    }
+  }
+
+  if (candidates.length > 200) throw new Error('Maximum 200 hôtes par import.')
+  const seen = new Set<string>()
+  return candidates.map((item, index) => {
+    const rawName = String(item.name ?? item.hostname ?? item.host ?? '').trim()
+    const row: BulkHostRow = {
+      key: `bulk-${index}-${rawName}`,
+      name: rawName,
+      ip: String(item.ip ?? item.address ?? '').trim(),
+      environment: String(item.environment ?? item.group ?? item.groups ?? defaults.environment).trim() || defaults.environment,
+      security_level: String(item.security_level ?? defaults.security_level).trim(),
+      groups: asGroupList(item.groups ?? item.tags ?? []),
+      ansible_user: String(item.ansible_user ?? item.ssh_user ?? defaults.ansible_user).trim() || defaults.ansible_user,
+      ansible_port: Number(item.ansible_port ?? item.ssh_port ?? defaults.ansible_port),
+      ssh_key_reference: String(item.ssh_key_reference ?? item.ssh_key ?? defaults.ssh_key_reference).trim() || defaults.ssh_key_reference,
+      valid: true,
+      selected: true,
+      error: '',
+    }
+    row.error = validateBulkRow(row, seen)
+    row.valid = !row.error
+    row.selected = row.valid
+    return row
+  })
 }
 
 type MetricValue = { value: number | null; status: string; source?: string }
@@ -606,43 +642,59 @@ function Overview() {
 /* Hosts                                                               */
 /* ------------------------------------------------------------------ */
 
+function launchDeploymentsForHosts(
+  hosts: Host[],
+  playbook: string,
+  extraVars: Record<string, string> = {},
+): Promise<Deployment[]> {
+  const byEnvironment = new Map<string, string[]>()
+  for (const host of hosts) {
+    const names = byEnvironment.get(host.environment) ?? []
+    names.push(host.name)
+    byEnvironment.set(host.environment, names)
+  }
+  return Promise.all(
+    [...byEnvironment].map(([environment, names]) =>
+      api.createDeployment({ environment, playbook, hosts: names, extra_vars: extraVars }),
+    ),
+  )
+}
+
 function Hosts() {
   const client = useQueryClient()
   const navigate = useNavigate()
   const currentUser = useQuery({ queryKey: ['me'], queryFn: api.me })
   const canManageHosts = currentUser.data?.role === 'admin' || currentUser.data?.role === 'operator'
+  const kpis = useQuery({ queryKey: ['kpis'], queryFn: api.kpis, refetchInterval: 30_000 })
+  const { data = [], isLoading, error } = useQuery({ queryKey: ['hosts'], queryFn: api.hosts })
+  const playbooks = useQuery({ queryKey: ['playbooks'], queryFn: api.playbooks })
+  const authorizedPlaybooks = (playbooks.data ?? []).filter((item) => item.is_allowlisted)
+  const defaultPlaybook = authorizedPlaybooks.find((item) => item.filename === 'site.yml')?.filename
+    ?? authorizedPlaybooks[0]?.filename ?? ''
+
   const [showForm, setShowForm] = useState(false)
   const [showImport, setShowImport] = useState(false)
   const [editingHost, setEditingHost] = useState<Host | null>(null)
-  const [editForm, setEditForm] = useState({ ip: '', security_level: 'high', groups: '', ansible_user: 'linsec-ansible', ansible_port: 22 })
-  const [importRows, setImportRows] = useState<HostEnrollmentRow[]>([])
-  const [importError, setImportError] = useState('')
-  const [batchSummary, setBatchSummary] = useState<EnrollmentBatchSummary | null>(null)
-  const [selectedPlaybook, setSelectedPlaybook] = useState('')
-  const [form, setForm] = useState({ name: '', ip: '', environment: 'production', security_level: 'high', groups: '', ansible_user: 'linsec-ansible', ansible_port: 22 })
-  const [sshPassword, setSshPassword] = useState('')
-  const [scannedFingerprint, setScannedFingerprint] = useState('')
-  const [scannedTarget, setScannedTarget] = useState('')
-  const [verifiedFingerprint, setVerifiedFingerprint] = useState('')
-  const [enrollmentNotice, setEnrollmentNotice] = useState('')
-  const { data = [], isLoading, error } = useQuery({
-    queryKey: ['hosts'],
-    queryFn: api.hosts,
-    refetchInterval: (query) => query.state.data?.some((host) => host.ssh_status === 'enrolling') ? 2000 : false,
-  })
-  const playbooks = useQuery({ queryKey: ['playbooks'], queryFn: api.playbooks })
-  const authorizedPlaybooks = (playbooks.data ?? []).filter((item) => item.is_allowlisted)
-  const activePlaybook = selectedPlaybook || authorizedPlaybooks[0]?.filename || ''
-  const fingerprintScan = useMutation({
-    mutationFn: (target: { ip: string; ansible_port: number }) => api.scanHostFingerprint(target),
-    onSuccess: (result, target) => {
-      setScannedFingerprint(result.fingerprint)
-      setScannedTarget(`${target.ip}:${target.ansible_port}`)
-      setVerifiedFingerprint('')
-    },
-  })
-  const enroll = useMutation({
-    mutationFn: () => api.enrollHost({
+  const [terminalHost, setTerminalHost] = useState<Host | null>(null)
+  const [bootstrapAfterAdd, setBootstrapAfterAdd] = useState(false)
+  const [bulkOptions, setBulkOptions] = useState(defaultBulkOptions)
+  const [form, setForm] = useState({ ...defaultBulkOptions, groups: '', name: '', ip: '', security_level: 'high' })
+  const [editForm, setEditForm] = useState({ ip: '', security_level: 'high', groups: '', ansible_user: 'linsec-ansible', ansible_port: 22, ssh_key_reference: 'linsec-ansible' })
+  const [testResult, setTestResult] = useState<{ state: 'idle' | 'testing' | 'ok' | 'failed'; message: string }>({ state: 'idle', message: '' })
+  const [notice, setNotice] = useState('')
+  const [search, setSearch] = useState('')
+  const [environmentFilter, setEnvironmentFilter] = useState('')
+  const [osFilter, setOsFilter] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
+  const [selectedIds, setSelectedIds] = useState<number[]>([])
+  const [actionStates, setActionStates] = useState<Record<string, string>>({})
+  const [bulkText, setBulkText] = useState('')
+  const [bulkRows, setBulkRows] = useState<BulkHostRow[]>([])
+  const [bulkError, setBulkError] = useState('')
+  const [bulkSummary, setBulkSummary] = useState<BulkSummary | null>(null)
+
+  const createHost = useMutation({
+    mutationFn: () => api.createHost({
       name: form.name,
       ip: form.ip,
       environment: form.environment,
@@ -650,283 +702,253 @@ function Hosts() {
       groups: form.groups.split(',').map((value) => value.trim()).filter(Boolean),
       ansible_user: form.ansible_user,
       ansible_port: form.ansible_port,
-      password: sshPassword,
-      verified_fingerprint: verifiedFingerprint.trim(),
+      ssh_key_reference: form.ssh_key_reference,
     }),
-    onSuccess: (host) => {
+    onSuccess: async (host) => {
+      setNotice(`${host.name} ajouté à l’inventaire Ansible.`)
       setShowForm(false)
-      setForm({ name: '', ip: '', environment: 'production', security_level: 'high', groups: '', ansible_user: 'linsec-ansible', ansible_port: 22 })
-      setScannedFingerprint('')
-      setScannedTarget('')
-      setVerifiedFingerprint('')
-      setEnrollmentNotice(`${host.name} : connexion vérifiée, installation de la clé Ansible en arrière-plan.`)
+      setForm({ ...defaultBulkOptions, groups: '', name: '', ip: '', security_level: 'high' })
+      setTestResult({ state: 'idle', message: '' })
+      if (bootstrapAfterAdd && defaultPlaybook) {
+        try {
+          await api.createDeployment({
+            environment: host.environment,
+            playbook: defaultPlaybook,
+            hosts: [host.name],
+          })
+          setNotice(`${host.name} ajouté ; déploiement ${defaultPlaybook} mis en file.`)
+        } catch (cause) {
+          setNotice(`${host.name} ajouté ; déploiement impossible : ${cause instanceof Error ? cause.message : 'erreur inconnue'}`)
+        }
+      }
       void client.invalidateQueries({ queryKey: ['hosts'] })
+      void client.invalidateQueries({ queryKey: ['deployments'] })
     },
-    onSettled: () => setSshPassword(''),
+  })
+  const testConnection = useMutation({
+    mutationFn: () => api.testHostConnection({
+      name: form.name || 'candidate',
+      ip: form.ip,
+      ansible_user: form.ansible_user,
+      ansible_port: form.ansible_port,
+    }),
+    onMutate: () => setTestResult({ state: 'testing', message: 'Connexion et détection OS en cours…' }),
+    onSuccess: (result) => setTestResult({
+      state: result.reachable ? 'ok' : 'failed',
+      message: result.reachable
+        ? `Connexion OK${result.detected_os ? ` · ${result.detected_os} détecté` : ' · OS non détecté'}`
+        : result.message,
+    }),
+    onError: (cause) => setTestResult({ state: 'failed', message: cause instanceof Error ? cause.message : 'Test impossible.' }),
   })
   const updateHost = useMutation({
-    mutationFn: (change: { id: number; body: { ip: string; security_level: string; groups: string[]; ansible_user: string; ansible_port: number } }) =>
-      api.updateHost(change.id, change.body),
-    onSuccess: (updated) => {
+    mutationFn: (change: { id: number; body: Record<string, unknown> }) => api.updateHost(change.id, change.body),
+    onSuccess: () => {
       setEditingHost(null)
       void client.invalidateQueries({ queryKey: ['hosts'] })
-      void client.invalidateQueries({ queryKey: ['host', updated.id] })
     },
   })
   const deleteHost = useMutation({
     mutationFn: api.deleteHost,
-    onSuccess: () => void client.invalidateQueries({ queryKey: ['hosts'] }),
+    onSuccess: () => { setSelectedIds([]); void client.invalidateQueries({ queryKey: ['hosts'] }) },
   })
-  const importHosts = useMutation({
-    mutationFn: async (): Promise<EnrollmentBatchSummary> => {
-      const outcomes: EnrollmentBatchSummary['hosts'] = []
-      const deployments: EnrollmentBatchSummary['deployments'] = []
-      const enrolledHosts: Array<{ id: number; name: string; environment: string }> = []
-
-      for (const [index, row] of importRows.entries()) {
-        if (!row.fingerprint || row.verifiedFingerprint.trim() !== row.fingerprint) {
-          outcomes.push({
-            name: row.name,
-            environment: row.environment,
-            status: 'failed',
-            message: row.scanError || 'Empreinte non vérifiée hors bande.',
-          })
-          continue
-        }
-        setImportRows((current) => current.map((item, itemIndex) =>
-          itemIndex === index ? { ...item, status: 'authenticating', message: '' } : item,
-        ))
-        try {
-          const host = await api.enrollHost({
-            name: row.name,
-            ip: row.ip,
-            environment: row.environment,
-            security_level: row.security_level,
-            groups: row.groups,
-            ansible_user: row.ansible_user,
-            ansible_port: row.ansible_port,
-            password: row.password,
-            verified_fingerprint: row.fingerprint,
-          })
-          enrolledHosts.push({ id: host.id, name: host.name, environment: host.environment })
-          outcomes.push({
-            name: row.name,
-            environment: row.environment,
-            status: 'enrolling',
-            message: 'Mot de passe accepté; installation de la clé en cours.',
-          })
-          setImportRows((current) => current.map((item, itemIndex) =>
-            itemIndex === index ? { ...item, password: '', status: 'enrolling', message: 'Installation de la clé…' } : item,
-          ))
-        } catch (cause) {
-          outcomes.push({
-            name: row.name,
-            environment: row.environment,
-            status: 'failed',
-            message: cause instanceof Error ? cause.message : 'Échec de connexion SSH.',
-          })
-          setImportRows((current) => current.map((item, itemIndex) =>
-            itemIndex === index ? { ...item, password: '', status: 'failed', message: cause instanceof Error ? cause.message : 'Échec de connexion SSH.' } : item,
-          ))
-        }
-      }
-
-      if (enrolledHosts.length) {
-        const pending = new Set(enrolledHosts.map((host) => host.id))
-        let currentHosts: Host[] = []
-        for (let attempt = 0; attempt < 60 && pending.size; attempt += 1) {
-          currentHosts = await Promise.all(enrolledHosts.map((host) => api.host(host.id)))
-          for (const host of currentHosts) {
-            if (host.ssh_status !== 'enrolling') pending.delete(host.id)
-          }
-          if (pending.size) await new Promise((resolve) => window.setTimeout(resolve, 2000))
-        }
-
-        const reachable = currentHosts.filter((host) => host.ssh_status === 'reachable')
-        for (const host of currentHosts) {
-          const index = importRows.findIndex((row) => row.name === host.name && row.environment === host.environment)
-          const status = host.ssh_status === 'reachable'
-            ? 'ready'
-            : host.ssh_status === 'enrolling' ? 'enrolling' : 'failed'
-          const message = host.ssh_status === 'reachable'
-            ? 'Clé Ansible installée et testée.'
-            : host.ssh_error || (host.ssh_status === 'enrolling' ? 'Installation en cours; relancez le playbook après vérification.' : 'Installation de la clé ou test Ansible échoué.')
-          const outcome = outcomes.find((item) => item.name === host.name && item.environment === host.environment)
-          if (outcome) {
-            outcome.status = status
-            outcome.message = message
-          }
-          if (index >= 0) setImportRows((current) => current.map((item, itemIndex) =>
-            itemIndex === index ? { ...item, status, message } : item,
-          ))
-        }
-
+  const bulkImport = useMutation({
+    mutationFn: async (): Promise<BulkSummary> => {
+      const chosen = bulkRows.filter((row) => row.valid && row.selected)
+      const result = await api.importHosts(chosen.map((row) => ({
+        name: row.name,
+        ip: row.ip,
+        environment: row.environment,
+        security_level: row.security_level,
+        groups: row.groups,
+        ansible_user: row.ansible_user,
+        ansible_port: row.ansible_port,
+        ssh_key_reference: row.ssh_key_reference,
+      })))
+      const deployments: BulkSummary['deployments'] = []
+      if (bootstrapAfterAdd && defaultPlaybook && result.imported.length) {
         const byEnvironment = new Map<string, Host[]>()
-        for (const host of reachable) {
-          const hosts = byEnvironment.get(host.environment) ?? []
-          hosts.push(host)
-          byEnvironment.set(host.environment, hosts)
+        for (const host of result.imported) {
+          const group = byEnvironment.get(host.environment) ?? []
+          group.push(host)
+          byEnvironment.set(host.environment, group)
         }
         for (const [environment, hosts] of byEnvironment) {
           try {
             const deployment = await api.createDeployment({
               environment,
-              playbook: activePlaybook,
+              playbook: defaultPlaybook,
               hosts: hosts.map((host) => host.name),
             })
             deployments.push({ environment, id: deployment.id })
           } catch (cause) {
-            deployments.push({
-              environment,
-              error: cause instanceof Error ? cause.message : 'Échec de création du déploiement.',
-            })
+            deployments.push({ environment, error: cause instanceof Error ? cause.message : 'Déploiement impossible.' })
           }
         }
       }
-      return { hosts: outcomes, deployments }
+      return {
+        imported: result.imported.map((host) => ({ name: host.name, environment: host.environment, message: 'Ajouté à l’inventaire' })),
+        failed: result.failed.map((failure) => ({ name: failure.name, environment: '', message: failure.detail })),
+        deployments,
+      }
     },
     onSuccess: (summary) => {
-      setBatchSummary(summary)
+      setBulkSummary(summary)
       void client.invalidateQueries({ queryKey: ['hosts'] })
       void client.invalidateQueries({ queryKey: ['deployments'] })
     },
-    onSettled: () => setImportRows((current) => current.map((row) => ({ ...row, password: '' }))),
   })
-  const scanImportRows = useMutation({
-    mutationFn: async (targets: Array<{ key: string; ip: string; ansible_port: number }>) => {
-      const results: Array<{ key: string; fingerprint: string | null; error: string }> = []
-      for (const target of targets) {
-        try {
-          const result = await api.scanHostFingerprint({ ip: target.ip, ansible_port: target.ansible_port })
-          results.push({ key: target.key, fingerprint: result.fingerprint, error: '' })
-        } catch (cause) {
-          results.push({ key: target.key, fingerprint: null, error: cause instanceof Error ? cause.message : 'Scan SSH impossible.' })
-        }
-      }
-      return results
+  const groupedAction = useMutation({
+    mutationFn: ({ playbook, label, extraVars }: { playbook: string; label: string; extraVars?: Record<string, string> }) =>
+      launchDeploymentsForHosts(data.filter((host) => selectedIds.includes(host.id)), playbook, extraVars)
+        .then((deployments) => ({ deployments, label })),
+    onMutate: (_variables) => {
+      const key = `${_variables.label}:${selectedIds.length}`
+      setActionStates((current) => ({ ...current, [key]: 'En cours…' }))
     },
-    onSuccess: (results) => setImportRows((current) => current.map((row) => {
-      const result = results.find((item) => item.key === row.key)
-      return result ? { ...row, fingerprint: result.fingerprint, scanError: result.error } : row
-    })),
+    onSuccess: ({ deployments }, variables) => {
+      const key = `${variables.label}:${selectedIds.length}`
+      setActionStates((current) => ({ ...current, [key]: `${deployments.length} tâche(s) en file` }))
+      void client.invalidateQueries({ queryKey: ['deployments'] })
+    },
+    onError: (cause, variables) => {
+      const key = `${variables.label}:${selectedIds.length}`
+      setActionStates((current) => ({ ...current, [key]: cause instanceof Error ? cause.message : 'Échec' }))
+    },
   })
-  const readImportFile = (file?: File) => {
-    importHosts.reset()
-    scanImportRows.reset()
-    setBatchSummary(null)
-    setImportRows([])
-    setImportError('')
+
+  const applyBulkText = (text: string) => {
+    setBulkText(text)
+    setBulkSummary(null)
+    setBulkError('')
+    try {
+      setBulkRows(parseBulkHosts(text, bulkOptions))
+    } catch (cause) {
+      setBulkRows([])
+      setBulkError(cause instanceof Error ? cause.message : 'Format non reconnu.')
+    }
+  }
+  const readBulkFile = (file?: File) => {
     if (!file) return
     if (file.size > 1_000_000) {
-      setImportError('Le fichier dépasse la limite de 1 Mo.')
+      setBulkError('Le fichier dépasse la limite de 1 Mo.')
       return
     }
-    void file.text().then((text) => {
-      const parsed = parseHostCsv(text)
-      if (!parsed.length) throw new Error('Le CSV ne contient aucune ligne de données.')
-      const rows = parsed.map((row, index) => ({
-        ...row,
-        key: `${row.environment}-${row.name}-${index}`,
-        fingerprint: null,
-        verifiedFingerprint: '',
-        scanError: '',
-        status: 'pending',
-        message: '',
-      }))
-      setImportRows(rows)
-      scanImportRows.mutate(rows.map(({ key, ip, ansible_port }) => ({ key, ip, ansible_port })))
-    }).catch((cause: unknown) => {
-      setImportError(cause instanceof Error ? cause.message : 'Lecture du CSV impossible.')
+    void file.text().then(applyBulkText).catch((cause: unknown) => {
+      setBulkError(cause instanceof Error ? cause.message : 'Lecture du fichier impossible.')
     })
   }
+  const toggleBulkRow = (key: string) => setBulkRows((current) => current.map((row) => row.key === key ? { ...row, selected: !row.selected } : row))
+
   if (isLoading) return <Loading label="Chargement de l’inventaire…" />
   if (error) return <div className="alert error">Impossible de charger les hôtes.</div>
 
+  const environments = [...new Set(data.map((host) => host.environment))].sort()
+  const operatingSystems = [...new Set(data.map((host) => host.os).filter((value): value is string => Boolean(value)))].sort()
+  const filtered = data.filter((host) => {
+    const query = search.trim().toLowerCase()
+    return (!query || `${host.name} ${host.ip} ${host.groups.join(' ')} ${host.os ?? ''}`.toLowerCase().includes(query))
+      && (!environmentFilter || host.environment === environmentFilter)
+      && (!osFilter || host.os === osFilter)
+      && (!statusFilter || host.ssh_status === statusFilter || host.status === statusFilter)
+  })
   const reachableCount = data.filter((host) => host.ssh_status === 'reachable').length
-  const securedCount = data.filter((host) => host.status === 'secured').length
-  const enrollingCount = data.filter((host) => host.ssh_status === 'enrolling' || host.status === 'deploying').length
+  const compliantCount = data.filter((host) => host.status === 'secured').length
+  const selectedCount = filtered.filter((host) => selectedIds.includes(host.id)).length
 
   return (
     <div className="page">
       <PageHeader
         eyebrow="Inventaire"
         title="Hôtes"
-        description={`${formatNumber(data.length)} serveur(s) · ${formatNumber(reachableCount)} joignable(s) · ${formatNumber(securedCount)} sécurisé(s)${enrollingCount ? ` · ${formatNumber(enrollingCount)} en cours` : ''}`}
+        description={`${formatNumber(data.length)} serveur(s) · ${formatNumber(reachableCount)} joignable(s) · ${formatNumber(compliantCount)} sécurisé(s)`}
         actions={canManageHosts && (
           <>
-            <button className="secondary" onClick={() => { setShowImport((visible) => !visible); setBatchSummary(null) }}><ScanLine /> Enrôlement CSV</button>
-            <button className="primary" onClick={() => { setEnrollmentNotice(''); setEditingHost(null); setShowForm(true) }}><Plus /> Ajouter un hôte</button>
+            <button className="secondary" onClick={() => { setShowImport((visible) => !visible); setNotice('') }}><ScanLine /> Import en masse</button>
+            <button className="primary" onClick={() => { setNotice(''); setEditingHost(null); setShowForm(true) }}><Plus /> Ajouter un hôte</button>
           </>
         )}
       />
-      {enrollmentNotice && <div className="alert success">{enrollmentNotice}</div>}
+      <div className="metrics-grid three">
+        <StatCard label="Hôtes" item={{ value: kpis.data?.hosts_total.value ?? data.length, status: 'ok' }} icon={Server} tone="cyan" hint="inventaire Ansible" />
+        <StatCard label="Conformité" item={{ value: kpis.data?.compliance_score.value ?? null, status: kpis.data?.compliance_score.status ?? 'unknown' }} icon={ShieldCheck} tone="success" suffix="%" hint="OpenSCAP" />
+        <StatCard label="Correctifs" item={{ value: kpis.data?.patch_coverage.value ?? null, status: kpis.data?.patch_coverage.status ?? 'unknown' }} icon={Boxes} tone="violet" suffix="%" hint="livepatch / sécurité" />
+      </div>
+      <article className="panel">
+        <div className="panel-heading"><div><p className="eyebrow">Vue du parc</p><h2>État opérationnel</h2></div><span className="badge info"><span className="dot" />{formatNumber(reachableCount)} agent(s) joignable(s)</span></div>
+        <div className="parc-summary">
+          <span className={`badge ${statusTone(kpis.data?.agent_coverage.status)}`}>Agents : {kpis.data?.agent_coverage.value ?? '—'}%</span>
+          <span className={`badge ${statusTone(kpis.data?.reboot_required.status)}`}>Redémarrage requis : {kpis.data?.reboot_required.value ?? '—'}</span>
+          <span className={`badge ${statusTone(kpis.data?.alerts_by_severity ? 'critical' : 'unknown')}`}>Alertes : {Object.values(kpis.data?.alerts_by_severity ?? {}).reduce((sum, value) => sum + value, 0)}</span>
+          <span className="badge muted">Durcissement : {formatNumber(compliantCount)} hôte(s)</span>
+        </div>
+      </article>
+      {notice && <div className="alert success">{notice}</div>}
 
-      {showImport && (
+      {showImport && canManageHosts && (
         <article className="panel form-panel host-import">
-          <div className="panel-heading"><div><p className="eyebrow">Enrôlement SSH</p><h2>Importer et préparer plusieurs hôtes</h2></div><StatusBadge value="pending" label="Vérification hors bande" /></div>
-          <p className="host-import-note">CSV limité à 25 hôtes avec la colonne <code>password</code>. Le scan des empreintes ne transmet pas les mots de passe. Pour chaque serveur, comparez le fingerprint à une source de confiance et saisissez-le dans le tableau. Après validation, le mot de passe sert uniquement au test SSH et à l’installation de la clé Ansible; il est ensuite effacé. Choisissez un playbook autorisé à lancer sur les hôtes dont la clé a été testée. Utilisez HTTPS (HTTP est permis uniquement sur localhost).</p>
-          <label className="host-csv-file">Fichier CSV<input type="file" accept=".csv,text/csv" disabled={importHosts.isPending} onChange={(event) => { readImportFile(event.target.files?.[0]); event.target.value = '' }} /></label>
-          {importError && <div className="alert error">{importError}</div>}
-          {importRows.length > 0 && (
+          <div className="panel-heading"><div><p className="eyebrow">Import en masse</p><h2>Prévisualiser puis ajouter les hôtes</h2></div><StatusBadge value="pending" label="Validation avant ajout" /></div>
+          <p className="host-import-note">Collez une liste d’IP/noms, un CSV avec en-têtes (<code>name,ip,environment,groups,ansible_user,ansible_port,ssh_key_reference</code>) ou un JSON. Format court : <code>hostname,ip,ssh_user,group,environment</code>. Les lignes en erreur ou désélectionnées ne sont pas importées. Le compte de service SSH doit déjà exister sur les cibles.</p>
+          <div className="form-grid three">
+            <label>Environnement par défaut<select value={bulkOptions.environment} onChange={(event) => setBulkOptions({ ...bulkOptions, environment: event.target.value })}><option>production</option><option>staging</option><option>development</option></select></label>
+            <label>Utilisateur de service<input value={bulkOptions.ansible_user} onChange={(event) => setBulkOptions({ ...bulkOptions, ansible_user: event.target.value })} /></label>
+            <label>Référence de clé SSH<input value={bulkOptions.ssh_key_reference} onChange={(event) => setBulkOptions({ ...bulkOptions, ssh_key_reference: event.target.value })} /></label>
+          </div>
+          <label className="host-csv-file">Fichier CSV / JSON<input type="file" accept=".csv,.json,text/csv,application/json" disabled={bulkImport.isPending} onChange={(event) => { readBulkFile(event.target.files?.[0]); event.target.value = '' }} /></label>
+          <label className="field">Ou coller la liste<textarea rows={6} value={bulkText} placeholder={'web01,10.0.0.11,linsec-ansible,linux,production\nweb02,10.0.0.12'} onChange={(event) => applyBulkText(event.target.value)} /></label>
+          {bulkError && <div className="alert error">{bulkError}</div>}
+          {bulkRows.length > 0 && (
             <>
-              <p className="host-import-note">Colonnes requises : <code>name,ip,environment,password</code>. Facultatives : <code>security_level</code>, <code>groups</code> séparés par <code>;</code>, <code>ansible_user</code>, <code>ansible_port</code>. Empreintes scannées : {importRows.filter((row) => row.fingerprint).length}/{importRows.length}.</p>
-              <div className="batch-playbook">
-                <label>Playbook autorisé à lancer après enrôlement
-                  <select value={activePlaybook} onChange={(event) => setSelectedPlaybook(event.target.value)} disabled={importHosts.isPending}>
-                    {authorizedPlaybooks.map((item: Playbook) => <option key={item.filename} value={item.filename}>{item.filename}</option>)}
-                  </select>
-                </label>
-                {playbooks.isError && <div className="alert error">Impossible de charger les playbooks autorisés.</div>}
-                {!authorizedPlaybooks.length && <div className="alert error">Aucun playbook autorisé disponible.</div>}
-              </div>
-              {scanImportRows.isPending && <p className="host-import-note">Scan des empreintes sans utiliser les mots de passe…</p>}
-              <div className="table-wrap"><table><thead><tr><th>Hôte / cible</th><th>Empreinte détectée</th><th>Vérification hors bande</th><th>Mot de passe temporaire</th><th>État</th></tr></thead><tbody>
-                {importRows.map((host) => <tr key={host.key}>
-                  <td><div className="cell-stack"><strong>{host.name}</strong><small className="host-row-target">{host.ip}:{host.ansible_port} · {host.environment}</small></div></td>
-                  <td className="mono">{host.fingerprint ?? (host.scanError || 'Scan en attente…')}</td>
-                  <td><input aria-label={`Empreinte vérifiée pour ${host.name}`} value={host.verifiedFingerprint} disabled={importHosts.isPending || !host.fingerprint} onChange={(event) => setImportRows((current) => current.map((item) => item.key === host.key ? { ...item, verifiedFingerprint: event.target.value.trim() } : item))} placeholder="Saisir le fingerprint vérifié" /></td>
-                  <td><input aria-label={`Mot de passe temporaire pour ${host.name}`} type="password" autoComplete="new-password" value={host.password} disabled={importHosts.isPending} onChange={(event) => setImportRows((current) => current.map((item) => item.key === host.key ? { ...item, password: event.target.value } : item))} /></td>
-                  <td><StatusBadge value={host.status} />{host.message && <small className="host-ssh-error">{host.message}</small>}</td>
+              <p className="host-import-note">{bulkRows.filter((row) => row.valid).length} ligne(s) valide(s) sur {bulkRows.length}. Doublons et erreurs de format signalés avant confirmation.</p>
+              <div className="table-wrap"><table><thead><tr><th>✓</th><th>Hôte</th><th>Adresse</th><th>Environnement</th><th>Groupes</th><th>Utilisateur / clé</th><th>Validation</th></tr></thead><tbody>
+                {bulkRows.map((row) => <tr key={row.key} className={row.valid ? '' : 'row-invalid'}>
+                  <td><input type="checkbox" aria-label={`Sélectionner ${row.name}`} checked={row.selected} disabled={!row.valid || bulkImport.isPending} onChange={() => toggleBulkRow(row.key)} /></td>
+                  <td><strong>{row.name || '—'}</strong></td>
+                  <td><span className="mono">{row.ip || '—'}</span></td>
+                  <td>{row.environment}</td>
+                  <td>{row.groups.join(', ') || '—'}</td>
+                  <td><small>{row.ansible_user} · {row.ssh_key_reference}:{row.ansible_port}</small></td>
+                  <td>{row.valid ? <StatusBadge value="pass" label="Valide" /> : <span className="badge danger">{row.error}</span>}</td>
                 </tr>)}
               </tbody></table></div>
-              {batchSummary && (
-                <div className={batchSummary.hosts.some((host) => host.status === 'failed') || batchSummary.deployments.some((deployment) => deployment.error) ? 'alert error batch-summary' : 'alert success batch-summary'}>
-                  <strong>Résultat d’enrôlement</strong>
-                  {batchSummary.hosts.map((host) => <div key={`${host.environment}-${host.name}`}>{host.name} ({host.environment}) — {host.status}: {host.message}</div>)}
-                  {batchSummary.deployments.map((deployment) => <div key={deployment.environment}>{deployment.environment}: {deployment.id ? <>playbook mis en file <code>{deployment.id}</code></> : `playbook non lancé — ${deployment.error}`}</div>)}
+              {bulkSummary && (
+                <div className={bulkSummary.failed.length || bulkSummary.deployments.some((deployment) => deployment.error) ? 'alert error batch-summary' : 'alert success batch-summary'}>
+                  <strong>Résultat de l’import</strong>
+                  {bulkSummary.imported.map((host) => <div key={`${host.environment}-${host.name}`}>{host.name} ({host.environment}) — {host.message}</div>)}
+                  {bulkSummary.failed.map((host, index) => <div key={`failed-${index}`}>{host.name || 'ligne'} — {host.message}</div>)}
+                  {bulkSummary.deployments.map((deployment) => <div key={deployment.environment}>{deployment.environment}: {deployment.id ? <>déploiement <code>{deployment.id}</code> en file</> : `non lancé — ${deployment.error}`}</div>)}
                 </div>
               )}
             </>
           )}
-          {importHosts.isError && <div className="alert error">{importHosts.error instanceof Error ? importHosts.error.message : 'Import impossible.'}</div>}
           <div className="form-actions">
-            <button className="secondary" disabled={importHosts.isPending || scanImportRows.isPending} onClick={() => { setImportRows([]); setImportError(''); setBatchSummary(null); importHosts.reset(); scanImportRows.reset() }}>Effacer les données et mots de passe</button>
-            <button className="primary" disabled={!importRows.some((row) => row.fingerprint && row.verifiedFingerprint.trim() === row.fingerprint && row.password) || importHosts.isPending || scanImportRows.isPending || !activePlaybook} onClick={() => { setBatchSummary(null); importHosts.mutate() }}>{importHosts.isPending ? 'Connexion, enrôlement et préparation…' : 'Enrôler les hôtes vérifiés puis exécuter'}</button>
+            <label className="checkbox-field"><input type="checkbox" checked={bootstrapAfterAdd} onChange={(event) => setBootstrapAfterAdd(event.target.checked)} /> Lancer le déploiement / bootstrap agent après ajout ({defaultPlaybook || 'aucun playbook autorisé'})</label>
+            <button className="primary" disabled={bulkImport.isPending || !bulkRows.some((row) => row.valid && row.selected)} onClick={() => bulkImport.mutate()}>{bulkImport.isPending ? 'Ajout en cours…' : `Ajouter ${bulkRows.filter((row) => row.valid && row.selected).length} hôte(s)`}</button>
           </div>
+          {bulkImport.isError && <div className="alert error">{bulkImport.error instanceof Error ? bulkImport.error.message : 'Import impossible.'}</div>}
         </article>
       )}
 
-      {showForm && (
+      {showForm && canManageHosts && (
         <article className="panel form-panel">
-          <div className="panel-heading"><div><p className="eyebrow">Nouvel hôte</p><h2>Enrôlement sécurisé</h2></div></div>
+          <div className="panel-heading"><div><p className="eyebrow">Nouvel hôte</p><h2>Ajout unitaire</h2></div><StatusBadge value="pending" label="Compte de service requis" /></div>
           <div className="form-grid">
-            <label>Nom<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
-            <label>Adresse IP<input value={form.ip} onChange={(event) => { setForm({ ...form, ip: event.target.value }); setScannedFingerprint(''); setScannedTarget(''); setVerifiedFingerprint(''); fingerprintScan.reset() }} /></label>
-            <label>Environnement<select value={form.environment} onChange={(event) => setForm({ ...form, environment: event.target.value })}><option value="production">production</option><option value="staging">staging</option><option value="development">development</option></select></label>
+            <label>Nom / alias<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
+            <label>Adresse IP<input value={form.ip} onChange={(event) => { setForm({ ...form, ip: event.target.value }); setTestResult({ state: 'idle', message: '' }) }} /></label>
+            <label>Environnement<select value={form.environment} onChange={(event) => setForm({ ...form, environment: event.target.value })}><option>production</option><option>staging</option><option>development</option></select></label>
             <label>Niveau<select value={form.security_level} onChange={(event) => setForm({ ...form, security_level: event.target.value })}><option>low</option><option>medium</option><option>high</option><option>critical</option></select></label>
             <label>Groupes<input value={form.groups} onChange={(event) => setForm({ ...form, groups: event.target.value })} placeholder="linux,servers" /></label>
-            <label>Utilisateur SSH<input value={form.ansible_user} onChange={(event) => setForm({ ...form, ansible_user: event.target.value })} /></label>
-            <label>Port SSH<input type="number" min="1" max="65535" value={form.ansible_port} onChange={(event) => { setForm({ ...form, ansible_port: Number(event.target.value) }); setScannedFingerprint(''); setScannedTarget(''); setVerifiedFingerprint(''); fingerprintScan.reset() }} /></label>
-            <label>Mot de passe SSH (usage unique)<input type="password" autoComplete="new-password" value={sshPassword} onChange={(event) => setSshPassword(event.target.value)} /></label>
+            <label>Utilisateur SSH (service)<input value={form.ansible_user} onChange={(event) => setForm({ ...form, ansible_user: event.target.value })} /></label>
+            <label>Port SSH<input type="number" min="1" max="65535" value={form.ansible_port} onChange={(event) => setForm({ ...form, ansible_port: Number(event.target.value) })} /></label>
+            <label>Référence de clé SSH<input value={form.ssh_key_reference} onChange={(event) => setForm({ ...form, ssh_key_reference: event.target.value })} placeholder="linsec-ansible" /></label>
           </div>
-          <div className="ssh-enrollment-approval">
-            <p>Découvrez l’empreinte sans envoyer le mot de passe, puis comparez-la à une console ou à une source de confiance. Le mot de passe n’est envoyé qu’après confirmation, utilisé une seule fois et jamais enregistré. L’enrôlement exige HTTPS, sauf depuis localhost.</p>
-            <button className="secondary" disabled={!form.ip || fingerprintScan.isPending} onClick={() => fingerprintScan.mutate({ ip: form.ip, ansible_port: form.ansible_port })}>{fingerprintScan.isPending ? 'Scan…' : 'Découvrir l’empreinte SSH'}</button>
-            {fingerprintScan.isError && <div className="alert error">{fingerprintScan.error instanceof Error ? fingerprintScan.error.message : 'Scan SSH impossible.'}</div>}
-            {scannedFingerprint && <><p className="mono fingerprint-candidate">{scannedFingerprint}</p><label className="fingerprint-confirm">Empreinte comparée à une source de confiance<input value={verifiedFingerprint} onChange={(event) => setVerifiedFingerprint(event.target.value.trim())} placeholder="Saisir l’empreinte vérifiée" /></label></>}
+          <div className="form-actions">
+            <button className="secondary" disabled={testConnection.isPending || !form.ip} onClick={() => testConnection.mutate()}>{testConnection.isPending ? 'Test…' : 'Tester la connexion / détecter l’OS'}</button>
+            <label className="checkbox-field"><input type="checkbox" checked={bootstrapAfterAdd} onChange={(event) => setBootstrapAfterAdd(event.target.checked)} /> Déployer après ajout</label>
           </div>
-          {enroll.isError && <div className="alert error">{enroll.error instanceof Error ? enroll.error.message : 'Échec de l’enrôlement. Aucun hôte ajouté.'}</div>}
-          <div className="form-actions"><button className="secondary" disabled={enroll.isPending} onClick={() => { setShowForm(false); setSshPassword('') }}>Annuler</button><button className="primary" disabled={enroll.isPending || !form.name || !form.ip || !sshPassword || scannedTarget !== `${form.ip}:${form.ansible_port}` || verifiedFingerprint.trim() !== scannedFingerprint || !sshFingerprint.test(verifiedFingerprint.trim())} onClick={() => enroll.mutate()}>{enroll.isPending ? 'Test de connexion…' : 'Tester et enrôler'}</button></div>
+          {testResult.state !== 'idle' && <div className={`alert ${testResult.state === 'ok' ? 'success' : testResult.state === 'failed' ? 'error' : ''}`}>{testResult.message}</div>}
+          {createHost.isError && <div className="alert error">{createHost.error instanceof Error ? createHost.error.message : 'Ajout impossible.'}</div>}
+          <div className="form-actions"><button className="secondary" onClick={() => setShowForm(false)}>Annuler</button><button className="primary" disabled={createHost.isPending || !form.name || !form.ip || !form.ansible_user} onClick={() => createHost.mutate()}>{createHost.isPending ? 'Ajout…' : 'Ajouter l’hôte'}</button></div>
         </article>
       )}
 
@@ -936,37 +958,133 @@ function Hosts() {
           <div className="form-grid">
             <label>Adresse IP<input value={editForm.ip} onChange={(event) => setEditForm({ ...editForm, ip: event.target.value })} /></label>
             <label>Niveau de sécurité<select value={editForm.security_level} onChange={(event) => setEditForm({ ...editForm, security_level: event.target.value })}><option>low</option><option>medium</option><option>high</option><option>critical</option></select></label>
-            <label>Groupes<input value={editForm.groups} onChange={(event) => setEditForm({ ...editForm, groups: event.target.value })} placeholder="linux,servers" /></label>
+            <label>Groupes<input value={editForm.groups} onChange={(event) => setEditForm({ ...editForm, groups: event.target.value })} /></label>
             <label>Utilisateur SSH<input value={editForm.ansible_user} onChange={(event) => setEditForm({ ...editForm, ansible_user: event.target.value })} /></label>
             <label>Port SSH<input type="number" min="1" max="65535" value={editForm.ansible_port} onChange={(event) => setEditForm({ ...editForm, ansible_port: Number(event.target.value) })} /></label>
+            <label>Référence de clé SSH<input value={editForm.ssh_key_reference} onChange={(event) => setEditForm({ ...editForm, ssh_key_reference: event.target.value })} /></label>
           </div>
-          {editingHost.ip !== editForm.ip || editingHost.ansible_port !== editForm.ansible_port ? <p className="host-import-note">Modifier l’adresse ou le port effacera l’empreinte épinglée et exigera une nouvelle vérification SSH.</p> : null}
           {updateHost.isError && <div className="alert error">{updateHost.error instanceof Error ? updateHost.error.message : 'Modification impossible.'}</div>}
-          <div className="form-actions"><button className="secondary" disabled={updateHost.isPending} onClick={() => setEditingHost(null)}>Annuler</button><button className="primary" disabled={updateHost.isPending || !editForm.ip || !editForm.ansible_user} onClick={() => updateHost.mutate({ id: editingHost.id, body: { ip: editForm.ip, security_level: editForm.security_level, groups: editForm.groups.split(',').map((group) => group.trim()).filter(Boolean), ansible_user: editForm.ansible_user, ansible_port: editForm.ansible_port } })}>{updateHost.isPending ? 'Enregistrement…' : 'Enregistrer'}</button></div>
+          <div className="form-actions"><button className="secondary" onClick={() => setEditingHost(null)}>Annuler</button><button className="primary" disabled={updateHost.isPending || !editForm.ip} onClick={() => updateHost.mutate({ id: editingHost.id, body: { ...editForm, groups: editForm.groups.split(',').map((group) => group.trim()).filter(Boolean) } })}>Enregistrer</button></div>
         </article>
       )}
 
+      {terminalHost && <HostTerminal host={terminalHost} onClose={() => setTerminalHost(null)} />}
+
       <article className="panel">
         <div className="panel-heading"><div><p className="eyebrow">Parc</p><h2>Serveurs enregistrés</h2></div><span className="badge muted">{formatNumber(data.length)} hôte(s)</span></div>
+        <div className="filter-bar">
+          <label><Search /> <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Rechercher hôte, IP, groupe, OS…" /></label>
+          <select value={environmentFilter} onChange={(event) => setEnvironmentFilter(event.target.value)}><option value="">Tous les environnements</option>{environments.map((value) => <option key={value}>{value}</option>)}</select>
+          <select value={osFilter} onChange={(event) => setOsFilter(event.target.value)}><option value="">Tous les OS</option>{operatingSystems.map((value) => <option key={value}>{value}</option>)}</select>
+          <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">Tous les statuts</option><option value="reachable">Joignable</option><option value="failed">En échec</option><option value="secured">Sécurisé</option><option value="pending">En attente</option></select>
+        </div>
+        {canManageHosts && selectedCount > 0 && (
+          <div className="bulk-actions">
+            <span className="badge info">{selectedCount} sélectionné(s)</span>
+            <button className="secondary" onClick={() => groupedAction.mutate({ playbook: 'wazuh-agent.yml', label: 'Agent Wazuh' })}>Installer / mettre à jour l’agent</button>
+            <button className="secondary" onClick={() => groupedAction.mutate({ playbook: 'verify.yml', label: 'Contrôle MAC' })}>Vérifier SELinux / AppArmor</button>
+            <button className="secondary" onClick={() => groupedAction.mutate({ playbook: 'site.yml', label: 'Nettoyage' })}>Nettoyer les résidus</button>
+            <button className="secondary" onClick={() => groupedAction.mutate({ playbook: 'openscap-scan.yml', label: 'Audit OpenSCAP' })}>Auditer (OpenSCAP)</button>
+            <button className="secondary" onClick={() => groupedAction.mutate({ playbook: 'hardening.yml', label: 'Remédiation OpenSCAP' })}>Remédier</button>
+          </div>
+        )}
+        {Object.entries(actionStates).map(([key, value]) => <div className="task-progress" key={key}><span className="spinner" />{key} — {value}</div>)}
         <DataTable
-          headers={['Hôte', 'Adresse IP', 'Environnement', 'Sécurité', 'Statut', 'SSH', 'Actions']}
+          headers={['', 'Hôte', 'Adresse IP', 'OS', 'Environnement', 'Statut', 'SSH', 'Actions']}
           empty="Aucun hôte enregistré"
-          rows={data.map((host) => [
+          rows={filtered.map((host) => [
+            <input key={`check-${host.id}`} type="checkbox" aria-label={`Sélectionner ${host.name}`} checked={selectedIds.includes(host.id)} onChange={() => setSelectedIds((current) => current.includes(host.id) ? current.filter((id) => id !== host.id) : [...current, host.id])} />,
             <div className="cell-title" key={`name-${host.id}`}><span className="avatar-sm">{initials(host.name)}</span><div className="cell-stack"><strong>{host.name}</strong><small>{host.groups.join(', ') || 'sans groupe'}</small></div></div>,
             <span className="mono" key={`ip-${host.id}`}>{host.ip}</span>,
-            <span className="badge muted" key={`env-${host.id}`}>{host.environment}</span>,
-            <StatusBadge value={host.security_level} key={`level-${host.id}`} />,
+            <span className="badge muted" key={`os-${host.id}`}>{host.os ?? 'Non détecté'}</span>,
+            <span className={`badge ${host.environment === 'production' ? 'warning' : 'muted'}`} key={`env-${host.id}`}>{host.environment}{host.environment === 'production' && ' · sensible'}</span>,
             <StatusBadge value={host.status} key={`status-${host.id}`} />,
             <div className="cell-stack" key={`ssh-${host.id}`} title={host.ssh_error ?? ''}><StatusBadge value={host.ssh_status} />{host.ssh_error && <small className="host-ssh-error">{host.ssh_error}</small>}</div>,
             <div className="actions" key={`actions-${host.id}`}>
-              {canManageHosts && <button className="link-button" onClick={() => { setShowForm(false); setEditingHost(host); setEditForm({ ip: host.ip, security_level: host.security_level, groups: host.groups.join(','), ansible_user: host.ansible_user, ansible_port: host.ansible_port }) }}>Modifier</button>}
+              <button className="link-button" onClick={() => setTerminalHost(host)}><Terminal /> Terminal</button>
+              {canManageHosts && <button className="link-button" onClick={() => { setShowForm(false); setEditingHost(host); setEditForm({ ip: host.ip, security_level: host.security_level, groups: host.groups.join(','), ansible_user: host.ansible_user, ansible_port: host.ansible_port, ssh_key_reference: host.ssh_key_reference }) }}>Modifier</button>}
               <button className="link-button" onClick={() => navigate(`/hosts/${host.id}`)}>Posture</button>
-              {currentUser.data?.role === 'admin' && <button className="link-button danger-link" disabled={deleteHost.isPending} onClick={() => { if (window.confirm(`Supprimer ${host.name} ? Cette action est irréversible.`)) deleteHost.mutate(host.id) }}>Supprimer</button>}
+              {currentUser.data?.role === 'admin' && <button className="link-button danger-link" disabled={deleteHost.isPending} onClick={() => { if (window.confirm(`Supprimer ${host.name} ? Cette action met aussi à jour l’inventaire Ansible.`)) deleteHost.mutate(host.id) }}>Supprimer</button>}
             </div>,
           ])}
         />
         {deleteHost.isError && <div className="alert error">{deleteHost.error instanceof Error ? deleteHost.error.message : 'Suppression impossible.'}</div>}
       </article>
+    </div>
+  )
+}
+
+function HostTerminal({ host, onClose }: { host: Host; onClose: () => void }) {
+  const [lines, setLines] = useState<string[]>([])
+  const [input, setInput] = useState('')
+  const [connected, setConnected] = useState(false)
+  const socketRef = useRef<WebSocket | null>(null)
+  const outputRef = useRef<HTMLPreElement | null>(null)
+
+  useEffect(() => {
+    const socket = new WebSocket(api.terminalUrl(host.id))
+    socketRef.current = socket
+    socket.onopen = () => setConnected(true)
+    socket.onclose = () => setConnected(false)
+    socket.onmessage = (event) => {
+      try {
+        const message = JSON.parse(String(event.data)) as { type: string; data?: string; message?: string }
+        const text = message.type === 'output' ? message.data ?? '' : `${message.message ?? ''}\n`
+        setLines((current) => [...current.slice(-5000), text])
+      } catch {
+        setLines((current) => [...current, String(event.data)])
+      }
+    }
+    return () => { socket.close(); socketRef.current = null }
+  }, [host.id])
+
+  useEffect(() => {
+    if (outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight
+  }, [lines])
+
+  const sendResize = () => {
+    const element = outputRef.current
+    if (!element || socketRef.current?.readyState !== WebSocket.OPEN) return
+    const rect = element.getBoundingClientRect()
+    const cols = Math.max(20, Math.min(400, Math.floor(rect.width / 8)))
+    const rows = Math.max(8, Math.min(200, Math.floor(rect.height / 18)))
+    socketRef.current.send(JSON.stringify({ type: 'resize', cols, rows }))
+  }
+
+  useEffect(() => {
+    const element = outputRef.current
+    if (!element) return
+    const observer = new ResizeObserver(sendResize)
+    observer.observe(element)
+    sendResize()
+    return () => observer.disconnect()
+  }, [])
+
+  return (
+    <div className="drawer-backdrop" role="presentation" onClick={onClose}>
+      <aside className="terminal-drawer" onClick={(event) => event.stopPropagation()}>
+        <div className="panel-heading">
+          <div><p className="eyebrow">Terminal interactif</p><h2>{host.name} <span className="mono">{host.ansible_user}@{host.ip}</span></h2></div>
+          <div className="actions"><StatusBadge value={connected ? 'connected' : 'pending'} label={connected ? 'Connecté' : 'Connexion…'} />{host.environment === 'production' && <span className="badge warning">Hôte sensible / production</span>}<button className="secondary" onClick={onClose}>Fermer</button></div>
+        </div>
+        <pre className="terminal-output" ref={outputRef}>{lines.join('')}</pre>
+        <div className="terminal-input">
+          <span className="mono">$</span>
+          <input
+            value={input}
+            autoComplete="off"
+            spellCheck={false}
+            placeholder="Commande…"
+            onChange={(event) => setInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' || socketRef.current?.readyState !== WebSocket.OPEN) return
+              socketRef.current.send(JSON.stringify({ type: 'input', data: `${input}\n` }))
+              setInput('')
+            }}
+          />
+        </div>
+        <p className="terminal-note">Session authentifiée et journalisée (utilisateur, hôte, horodatage). Aucune vérification d’empreinte SSH.</p>
+      </aside>
     </div>
   )
 }
@@ -980,198 +1098,116 @@ function HostDetail() {
   const id = Number(hostId)
   const navigate = useNavigate()
   const client = useQueryClient()
-  const currentUser = useQuery({ queryKey: ['me'], queryFn: api.me })
-  const host = useQuery({
-    queryKey: ['host', id],
-    queryFn: () => api.host(id),
-    enabled: Number.isInteger(id),
-    refetchInterval: (query) => query.state.data?.ssh_status === 'enrolling' ? 2000 : false,
-  })
+  const host = useQuery({ queryKey: ['host', id], queryFn: () => api.host(id), enabled: Number.isInteger(id) })
   const posture = useQuery({ queryKey: ['host-posture', id], queryFn: () => api.hostPosture(id), enabled: Number.isInteger(id) })
-  const playbooks = useQuery({ queryKey: ['playbooks'], queryFn: api.playbooks })
-  const publicKey = useQuery({ queryKey: ['ansible-public-key'], queryFn: api.ansiblePublicKey })
-  const [playbook, setPlaybook] = useState('openscap-scan.yml')
-  const [checkMode, setCheckMode] = useState(false)
-  const [expectedFingerprint, setExpectedFingerprint] = useState('')
-  const [enrollmentPassword, setEnrollmentPassword] = useState('')
-  const [ansiblePassword, setAnsiblePassword] = useState('')
-  const remove = useMutation({ mutationFn: () => api.deleteHost(id), onSuccess: () => { void client.invalidateQueries({ queryKey: ['hosts'] }); navigate('/hosts') } })
-  const run = useMutation({ mutationFn: () => api.createDeployment({ environment: host.data?.environment ?? '', playbook, hosts: [host.data?.name ?? ''], check_mode: checkMode }), onSuccess: (deployment) => navigate(`/deployments/${deployment.id}`) })
-  const testSSH = useMutation({
-    mutationFn: () => api.testHostSSH(id),
-    onSuccess: () => {
-      void client.invalidateQueries({ queryKey: ['host', id] })
-      void client.invalidateQueries({ queryKey: ['hosts'] })
-    },
-  })
-  const acceptFingerprint = useMutation({
-    mutationFn: () => api.acceptHostSSHFingerprint(id, expectedFingerprint.trim()),
-    onSuccess: () => {
-      setExpectedFingerprint('')
-      testSSH.reset()
-      void client.invalidateQueries({ queryKey: ['host', id] })
-    },
-  })
-  const enrollKey = useMutation({
-    mutationFn: (password: string) => api.enrollExistingHostKey(id, password),
-    onSuccess: () => {
-      void client.invalidateQueries({ queryKey: ['host', id] })
-      void client.invalidateQueries({ queryKey: ['hosts'] })
-    },
-    onSettled: () => setEnrollmentPassword(''),
-  })
-  const saveAnsiblePassword = useMutation({
-    mutationFn: (password: string) => api.setHostAnsiblePassword(id, password),
-    onSuccess: () => {
-      void client.invalidateQueries({ queryKey: ['host', id] })
-      void client.invalidateQueries({ queryKey: ['hosts'] })
-    },
-    onSettled: () => setAnsiblePassword(''),
-  })
-  const clearAnsiblePassword = useMutation({
-    mutationFn: () => api.clearHostAnsiblePassword(id),
-    onSuccess: () => {
-      void client.invalidateQueries({ queryKey: ['host', id] })
-      void client.invalidateQueries({ queryKey: ['hosts'] })
-    },
-  })
-  if (host.isLoading || posture.isLoading) return <Loading label="Chargement de la posture…" />
-  if (host.isError || posture.isError) return <div className="alert error">Impossible de charger cet hôte.</div>
-  const data = posture.data
-  const fingerprintNeedsApproval = testSSH.data?.ssh_status === 'fingerprint_pending' || testSSH.data?.ssh_status === 'fingerprint_changed'
+  const stack = useQuery({ queryKey: ['stack-configuration'], queryFn: api.stackConfiguration })
+  const [terminalOpen, setTerminalOpen] = useState(false)
+  const [actionStates, setActionStates] = useState<Record<string, string>>({})
+  const [testMessage, setTestMessage] = useState('')
+
+  if (host.isLoading) return <Loading label="Chargement de la fiche hôte…" />
+  if (host.isError || !host.data) return <div className="alert error">Hôte introuvable.</div>
+
+  const current = host.data
+  const currentPosture = posture.data
+  const launch = async (playbook: string, label: string, extraVars: Record<string, string> = {}) => {
+    setActionStates((states) => ({ ...states, [label]: 'En cours…' }))
+    try {
+      const deployment = await api.createDeployment({
+        environment: current.environment,
+        playbook,
+        hosts: [current.name],
+        extra_vars: extraVars,
+      })
+      setActionStates((states) => ({ ...states, [label]: `Tâche ${deployment.id} en file` }))
+      void client.invalidateQueries({ queryKey: ['deployments'] })
+    } catch (cause) {
+      setActionStates((states) => ({ ...states, [label]: cause instanceof Error ? cause.message : 'Échec' }))
+    }
+  }
+  const pendingFindings = currentPosture?.patch_findings.filter((finding) => finding.status !== 'resolved') ?? []
+  const rebootRequired = pendingFindings.some((finding) => finding.reboot_required)
+
   return (
     <div className="page">
       <PageHeader
-        eyebrow="Posture unifiée"
-        title={host.data?.name ?? 'Hôte'}
-        description={`${host.data?.ip ?? ''} · ${host.data?.environment ?? ''} · agent Wazuh ${data?.agent ? data.agent.status : 'non associé'}`}
-        actions={(
-          <>
-            <label className="check-control"><input type="checkbox" checked={checkMode} onChange={(event) => setCheckMode(event.target.checked)} /> Check mode</label>
-            <select value={playbook} onChange={(event) => setPlaybook(event.target.value)}>{(playbooks.data ?? []).filter((item) => item.is_allowlisted).map((item) => <option key={item.filename} value={item.filename}>{item.filename}</option>)}</select>
-            <button className="primary" disabled={run.isPending || !host.data} onClick={() => run.mutate()}>{checkMode ? 'Prévisualiser' : 'Exécuter'}</button>
-            <button className="secondary" disabled={testSSH.isPending} onClick={() => testSSH.mutate()}>{testSSH.isPending ? 'Test en cours…' : 'Tester SSH'}</button>
-            {currentUser.data?.role === 'admin' && <button className="danger" disabled={remove.isPending} onClick={() => { if (window.confirm(`Supprimer ${host.data?.name} ?`)) remove.mutate() }}>Supprimer</button>}
-          </>
-        )}
+        eyebrow="Fiche serveur"
+        title={current.name}
+        description={`${current.ip} · ${current.environment} · ${current.os ?? 'OS non détecté'} · utilisateur de service ${current.ansible_user}`}
+        actions={<>
+          <button className="secondary" onClick={() => setTerminalOpen(true)}><Terminal /> Terminal</button>
+          {stack.data?.wazuh_dashboard_url && <a className="secondary button-link" href={stack.data.wazuh_dashboard_url} target="_blank" rel="noreferrer">Wazuh <ArrowUpRight /></a>}
+          <button className="secondary" onClick={() => navigate('/hosts')}>Retour</button>
+        </>}
       />
-      <section className="detail-grid five">
-        <article className="panel detail-card">
-          <p className="eyebrow">Identité</p>
-          <dl>
-            <dt>IP</dt><dd className="mono">{host.data?.ip}</dd>
-            <dt>Environnement</dt><dd>{host.data?.environment}</dd>
-            <dt>Sécurité</dt><dd><StatusBadge value={host.data?.security_level} /></dd>
-            <dt>Agent Wazuh</dt><dd>{data?.agent ? `${data.agent.name} (${humanize(data.agent.status)})` : 'Non associé'}</dd>
-          </dl>
-        </article>
-        <article className="panel detail-card">
-          <p className="eyebrow">Connexion Ansible</p>
-          <dl>
-            <dt>Utilisateur</dt><dd>{host.data?.ansible_user}</dd>
-            <dt>Port</dt><dd>{host.data?.ansible_port}</dd>
-            <dt>Authentification</dt><dd>{host.data?.ansible_password_configured ? 'Mot de passe SSH + sudo' : 'Clé SSH'}</dd>
-            <dt>Statut SSH</dt><dd><StatusBadge value={host.data?.ssh_status} /></dd>
-            <dt>Empreinte</dt><dd className="mono">{host.data?.ssh_fingerprint ?? 'Non vérifiée'}</dd>
-          </dl>
-          {testSSH.data && <small>{testSSH.data.message}</small>}
-          {host.data?.ssh_error && <small className="host-ssh-error">{host.data.ssh_error}</small>}
-        </article>
-        <article className="panel detail-card">
-          <p className="eyebrow">Conformité</p>
-          <strong className="detail-score">{data?.compliance?.score == null ? '—' : `${Math.round(data.compliance.score)}%`}</strong>
-          <small>{data?.compliance ? `${data.compliance.profile} · ${humanize(data.compliance.status)}` : 'Aucun scan disponible'}</small>
-          <div className="stat-lines"><div className="stat-line"><span>Contrôles suivis</span><strong>{data?.hardening.length ?? 0}</strong></div></div>
-        </article>
-        <article className="panel detail-card">
-          <p className="eyebrow">Patching</p>
-          <strong>{data?.patch_findings.length ?? 0}</strong>
-          <small>correctifs suivis</small>
-          <div className="stat-lines"><div className="stat-line"><span>Source</span><strong>{data?.patch_findings[0]?.source ?? '—'}</strong></div></div>
-        </article>
-        <article className="panel detail-card">
-          <p className="eyebrow">Live patch</p>
-          <strong>{humanize(data?.livepatch?.livepatch_state ?? 'unknown')}</strong>
-          <small>{data?.livepatch?.kernel ?? 'Kernel inconnu'}</small>
-          <div className="stat-lines"><div className="stat-line"><span>Exposition</span><strong>{data?.livepatch?.exposure_days != null ? `${data.livepatch.exposure_days} j` : 'Inconnue'}</strong></div></div>
-        </article>
-      </section>
+      {current.environment === 'production' && <div className="alert warning"><TriangleAlert /> Hôte de production : toute remédiation peut impacter SSH, le pare-feu ou des services métier.</div>}
+      <div className="metrics-grid three">
+        <StatCard label="Conformité OpenSCAP" item={{ value: currentPosture?.compliance?.score ?? null, status: currentPosture?.compliance ? 'ok' : 'unknown' }} icon={ShieldCheck} tone="success" suffix="%" />
+        <StatCard label="Agent Wazuh" item={{ value: currentPosture?.agent ? 1 : 0, status: currentPosture?.agent?.status === 'active' ? 'ok' : 'unknown' }} icon={Radar} tone="cyan" hint={currentPosture?.agent?.status ?? 'aucun agent'} />
+        <StatCard label="Correctifs en attente" item={{ value: pendingFindings.length, status: pendingFindings.length ? 'stale' : 'ok' }} icon={Boxes} tone={pendingFindings.length ? 'warning' : 'success'} hint={rebootRequired ? 'redémarrage requis' : 'pas de redémarrement'} />
+      </div>
 
-      {fingerprintNeedsApproval && (
-        <article className="panel fingerprint-approval">
-          <div className="panel-heading"><div><p className="eyebrow">Vérification hors bande requise</p><h2>Empreinte SSH non approuvée</h2></div><StatusBadge value="fingerprint_pending" /></div>
-          <p className="host-import-note">Aucune connexion SSH n’a été tentée. Comparez l’empreinte découverte ci-dessous à une source de confiance (console ou inventaire officiel), puis saisissez la valeur vérifiée. Ne l’approuvez pas uniquement parce qu’elle a été détectée par le réseau.</p>
-          <p className="mono fingerprint-candidate">{testSSH.data?.fingerprint}</p>
-          <label className="fingerprint-confirm">Empreinte vérifiée hors bande<input value={expectedFingerprint} onChange={(event) => setExpectedFingerprint(event.target.value.trim())} placeholder="SHA256:…" /></label>
-          {acceptFingerprint.isError && <div className="alert error">{acceptFingerprint.error instanceof Error ? acceptFingerprint.error.message : 'Approbation impossible.'}</div>}
-          <div className="form-actions"><button className="primary" disabled={acceptFingerprint.isPending || !sshFingerprint.test(expectedFingerprint)} onClick={() => { if (window.confirm('Avez-vous comparé cette empreinte avec une source de confiance ?')) acceptFingerprint.mutate() }}>{acceptFingerprint.isPending ? 'Vérification…' : 'Enregistrer l’empreinte vérifiée'}</button></div>
-        </article>
-      )}
-
-      <section className="dashboard-grid">
-        <article className="panel">
-          <div className="panel-heading"><div><p className="eyebrow">Durcissement</p><h2>Contrôles récents</h2></div><span className="badge muted">{data?.hardening.length ?? 0}</span></div>
-          <DataTable
-            headers={['Catégorie', 'Contrôle', 'Résultat']}
-            empty="Aucun contrôle de durcissement"
-            rows={(data?.hardening ?? []).map((check) => [check.category, check.control, <StatusBadge value={check.status} key={check.id} />])}
-          />
-        </article>
-        <article className="panel">
-          <div className="panel-heading"><div><p className="eyebrow">Correctifs</p><h2>Findings de l’hôte</h2></div><span className="badge muted">{data?.patch_findings.length ?? 0}</span></div>
-          <DataTable
-            headers={['Paquet', 'Sévérité', 'Statut']}
-            empty="Aucun correctif suivi"
-            rows={(data?.patch_findings ?? []).map((finding) => [finding.package, <StatusBadge value={finding.severity} key={`sev-${finding.id}`} />, <StatusBadge value={finding.status} key={`st-${finding.id}`} />])}
-          />
-        </article>
-      </section>
+      {terminalOpen && <HostTerminal host={current} onClose={() => setTerminalOpen(false)} />}
 
       <article className="panel">
-        <div className="panel-heading"><div><p className="eyebrow">Authentification Ansible</p><h2>Mot de passe SSH et sudo</h2></div></div>
-        {host.data?.ansible_user === 'root' ? (
-          <small>La connexion par mot de passe root est désactivée. Utilisez un compte non-root avec sudo.</small>
-        ) : currentUser.data?.role === 'admin' || currentUser.data?.role === 'operator' ? (
-          <>
-            <small>{host.data?.ansible_password_configured ? 'Un mot de passe est enregistré chiffré et sera utilisé pour SSH et sudo.' : 'Le mot de passe saisi sera validé par SSH, chiffré en base, puis utilisé pour SSH et sudo lors des déploiements.'}</small>
-            <div className="form-actions">
-              <label className="fingerprint-confirm">Mot de passe du compte {host.data?.ansible_user}
-                <input type="password" autoComplete="new-password" value={ansiblePassword} onChange={(event) => setAnsiblePassword(event.target.value)} />
-              </label>
-              <button className="secondary" disabled={!host.data?.ssh_fingerprint || !ansiblePassword || saveAnsiblePassword.isPending} onClick={() => saveAnsiblePassword.mutate(ansiblePassword)}>
-                {saveAnsiblePassword.isPending ? 'Vérification et chiffrement…' : 'Enregistrer et vérifier'}
-              </button>
-              {host.data?.ansible_password_configured && <button className="link-button danger-link" disabled={clearAnsiblePassword.isPending} onClick={() => clearAnsiblePassword.mutate()}>Supprimer le mot de passe enregistré</button>}
-            </div>
-            {saveAnsiblePassword.isError && <div className="alert error">{saveAnsiblePassword.error instanceof Error ? saveAnsiblePassword.error.message : 'Enregistrement du mot de passe impossible.'}</div>}
-            {clearAnsiblePassword.isError && <div className="alert error">{clearAnsiblePassword.error instanceof Error ? clearAnsiblePassword.error.message : 'Suppression du mot de passe impossible.'}</div>}
-          </>
-        ) : null}
+        <div className="panel-heading"><div><p className="eyebrow">Agents & prérequis</p><h2>Connectivité et prerequisites</h2></div><StatusBadge value={current.ssh_status} /></div>
+        <div className="detail-grid">
+          <div><span>Utilisateur Ansible</span><strong>{current.ansible_user}</strong></div>
+          <div><span>Référence de clé</span><strong>{current.ssh_key_reference}</strong></div>
+          <div><span>Port SSH</span><strong>{current.ansible_port}</strong></div>
+          <div><span>Dernier test</span><strong>{formatDateTime(current.last_ssh_test_at)}</strong></div>
+        </div>
+        <div className="form-actions">
+          <button className="secondary" onClick={async () => {
+            setTestMessage('Test en cours…')
+            try {
+              const result = await api.testHostSSH(id)
+              setTestMessage(result.reachable ? `Connexion OK${result.detected_os ? ` · ${result.detected_os}` : ''}` : result.message)
+              void client.invalidateQueries({ queryKey: ['host', id] })
+            } catch (cause) {
+              setTestMessage(cause instanceof Error ? cause.message : 'Test impossible.')
+            }
+          }}>Tester la connexion / détecter l’OS</button>
+          <button className="secondary" onClick={() => void launch('wazuh-agent.yml', 'Agent Wazuh')}>Installer / mettre à jour l’agent Wazuh</button>
+          <button className="secondary" onClick={() => void launch('verify.yml', 'MAC')}>Vérifier SELinux / AppArmor</button>
+          <button className="secondary" onClick={() => void launch('site.yml', 'Nettoyage')}>Nettoyer les résidus Uyuni/Salt</button>
+        </div>
+        {testMessage && <p className="host-import-note">{testMessage}</p>}
       </article>
 
       <article className="panel">
-        <div className="panel-heading"><div><p className="eyebrow">Enrôlement SSH</p><h2>Clé publique Ansible</h2></div></div>
-        {publicKey.data ? (
-          <>
-            <textarea className="ssh-key" readOnly value={publicKey.data.public_key} />
-            <small>{host.data?.ansible_password_configured ? 'La connexion Ansible utilise le mot de passe enregistré.' : host.data?.ssh_status === 'reachable' ? 'Connexion par clé vérifiée.' : host.data?.ssh_status === 'enrolling' ? 'Installation de la clé en arrière-plan…' : <>Pour les hôtes importés sans enrôlement par mot de passe, ajoutez cette clé dans <code>~/.ssh/authorized_keys</code> du compte <strong>{host.data?.ansible_user}</strong>, puis lancez « Tester SSH ».</>}</small>
-            {host.data?.ansible_user === 'root' ? (
-              <small>L’installation par mot de passe est désactivée pour root. Utilisez un compte non-root avec sudo.</small>
-            ) : currentUser.data?.role === 'admin' || currentUser.data?.role === 'operator' ? (
-              <div className="form-actions">
-                <label className="fingerprint-confirm">Mot de passe temporaire de {host.data?.ansible_user}
-                  <input type="password" autoComplete="new-password" value={enrollmentPassword} onChange={(event) => setEnrollmentPassword(event.target.value)} />
-                </label>
-                <button className="secondary" disabled={!host.data?.ssh_fingerprint || !enrollmentPassword || enrollKey.isPending || host.data?.ssh_status === 'enrolling'} onClick={() => enrollKey.mutate(enrollmentPassword)}>
-                  {enrollKey.isPending ? 'Vérification et installation…' : 'Installer la clé avec ce mot de passe'}
-                </button>
-                <small>Le mot de passe sert uniquement à installer la clé et n’est pas enregistré.</small>
-              </div>
-            ) : null}
-            {enrollKey.isError && <div className="alert error">{enrollKey.error instanceof Error ? enrollKey.error.message : 'Installation de la clé impossible.'}</div>}
-          </>
-        ) : <small>Génération de la clé…</small>}
+        <div className="panel-heading"><div><p className="eyebrow">Durcissement</p><h2>OpenSCAP — audit, remédiation, re-contrôle</h2></div><StatusBadge value={currentPosture?.compliance?.status ?? 'unknown'} /></div>
+        <p className="host-import-note">Les rapports avant/après sont générés dans <code>/var/log/linsec360/</code>. La remédiation filtre les règles qui coupent SSH et n’ouvre pas les ports Wazuh 1514/1515.</p>
+        <div className="form-actions">
+          <button className="secondary" onClick={() => void launch('openscap-scan.yml', 'Audit')}>1. Auditer (Scan)</button>
+          <button className="danger" onClick={() => {
+            if (window.confirm('La remédiation peut modifier SSH, le pare-feu ou des services. Les règles SSH et Wazuh sont exclues. Continuer ?')) void launch('hardening.yml', 'Remédiation')
+          }}>2. Remédier</button>
+          <button className="secondary" onClick={() => void launch('verify.yml', 'Re-contrôle')}>3. Re-contrôler</button>
+        </div>
+        {currentPosture?.compliance && <div className="detail-grid">
+          <div><span>Profil</span><strong>{currentPosture.compliance.profile}</strong></div>
+          <div><span>Score</span><strong>{currentPosture.compliance.score ?? '—'}%</strong></div>
+          <div><span>Dernier scan</span><strong>{formatDateTime(currentPosture.compliance.created_at)}</strong></div>
+        </div>}
+        {currentPosture?.hardening.length ? <DataTable headers={['Contrôle', 'Catégorie', 'Statut']} rows={currentPosture.hardening.map((check) => [<strong key={check.id}>{check.control}</strong>, <span key={`cat-${check.id}`}>{check.category}</span>, <StatusBadge key={`st-${check.id}`} value={check.status} />])} /> : null}
       </article>
+
+      <article className="panel">
+        <div className="panel-heading"><div><p className="eyebrow">Patching — Option 2</p><h2>Livepatch et correctifs de sécurité</h2></div>{rebootRequired && <StatusBadge value="warning" label="Redémarrage requis" />}</div>
+        <div className="detail-grid">
+          <div><span>Livepatch</span><strong>{currentPosture?.livepatch?.livepatch_state ?? 'Non détecté'}</strong></div>
+          <div><span>Correctifs en attente</span><strong>{pendingFindings.length}</strong></div>
+          <div><span>Exposition noyau</span><strong>{currentPosture?.livepatch?.exposure_days ?? '—'} jour(s)</strong></div>
+        </div>
+        <div className="form-actions">
+          <button className="secondary" onClick={() => void launch('livepatch-check.yml', 'Livepatch')}>Vérifier le livepatch</button>
+          <button className="secondary" onClick={() => void launch('patch-security.yml', 'Correctifs')}>Vérifier / appliquer les correctifs ciblés</button>
+        </div>
+        {pendingFindings.length > 0 && <DataTable headers={['Paquet', 'CVE', 'Sévérité', 'Redémarrage']} rows={pendingFindings.slice(0, 20).map((finding) => [<strong key={finding.id}>{finding.package}</strong>, <span className="mono" key={`cve-${finding.id}`}>{finding.cve}</span>, <StatusBadge key={`sev-${finding.id}`} value={finding.severity} />, <span key={`reboot-${finding.id}`}>{finding.reboot_required ? 'Oui' : 'Non'}</span>])} />}
+      </article>
+
+      {Object.entries(actionStates).map(([key, value]) => <div className="task-progress" key={key}><span className="spinner" />{key} — {value}</div>)}
     </div>
   )
 }
@@ -1327,6 +1363,23 @@ function Compliance() {
   const [hostName, setHostName] = useState('')
   const [profile, setProfile] = useState('')
   const [launchError, setLaunchError] = useState('')
+  const [stepMessage, setStepMessage] = useState('')
+  const launchStep = async (playbook: string, label: string, extraVars: Record<string, string> = {}) => {
+    if (label === 'Remédier' && !window.confirm('La remédiation peut impacter SSH, le pare-feu et des services. Les règles SSH et les ports Wazuh 1514/1515 sont exclus. Continuer ?')) return
+    setStepMessage(`${label} : lancement…`)
+    try {
+      const deployment = await api.createDeployment({
+        environment: (hosts.data ?? []).find((host) => host.name === hostName)?.environment ?? '',
+        playbook,
+        hosts: [hostName],
+        extra_vars: extraVars,
+      })
+      setStepMessage(`${label} : tâche ${deployment.id} en file`)
+      void client.invalidateQueries({ queryKey: ['deployments'] })
+    } catch (cause) {
+      setStepMessage(`${label} : ${cause instanceof Error ? cause.message : 'échec'}`)
+    }
+  }
   const launch = useMutation({
     mutationFn: () => api.createDeployment({ environment: (hosts.data ?? []).find((host) => host.name === hostName)?.environment ?? '', playbook: 'openscap-scan.yml', hosts: [hostName], extra_vars: profile ? { openscap_profile: profile } : {} }),
     onSuccess: (deployment) => { setLaunchError(''); void client.invalidateQueries({ queryKey: ['compliance'] }); navigate(`/deployments/${deployment.id}`) },
@@ -1358,8 +1411,14 @@ function Compliance() {
         <div className="form-grid three">
           <label>Hôte<select value={hostName} onChange={(event) => setHostName(event.target.value)}><option value="">Sélectionner</option>{(hosts.data ?? []).map((host) => <option key={host.id} value={host.name}>{host.name}</option>)}</select></label>
           <label>Profil<select value={profile} onChange={(event) => setProfile(event.target.value)}><option value="">Défaut du playbook</option>{(profiles.data ?? []).map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
-          <div className="form-spacer"><button className="primary" disabled={!hostName || launch.isPending} onClick={() => launch.mutate()}>{launch.isPending ? 'Lancement…' : 'Lancer OpenSCAP'}</button></div>
+          <div className="form-spacer"><button className="primary" disabled={!hostName || launch.isPending} onClick={() => launch.mutate()}>{launch.isPending ? 'Lancement…' : '1. Auditer (Scan)'}</button></div>
         </div>
+        <p className="host-import-note">Rapports avant/après sous <code>/var/log/linsec360/</code>. La remédiation exclut les règles SSH et les ports Wazuh 1514/1515.</p>
+        <div className="form-actions">
+          <button className="danger" disabled={!hostName} onClick={() => void launchStep('hardening.yml', 'Remédier')}>2. Remédier</button>
+          <button className="secondary" disabled={!hostName} onClick={() => void launchStep('verify.yml', 'Re-contrôle')}>3. Re-contrôler</button>
+        </div>
+        {stepMessage && <p className="host-import-note">{stepMessage}</p>}
         {launchError && <div className="alert error">{launchError}</div>}
       </article>
       <article className="panel">
@@ -1387,8 +1446,24 @@ function Compliance() {
 function Patching() {
   const client = useQueryClient()
   const { data = [], isLoading, error } = useQuery({ queryKey: ['patch-findings'], queryFn: api.patchFindings })
+  const hosts = useQuery({ queryKey: ['hosts'], queryFn: api.hosts })
+  const kpis = useQuery({ queryKey: ['kpis'], queryFn: api.kpis, refetchInterval: 30_000 })
+  const [hostName, setHostName] = useState('')
+  const [patchMessage, setPatchMessage] = useState('')
   const syncWazuh = useMutation({ mutationFn: api.syncWazuhPatches, onSuccess: () => void client.invalidateQueries({ queryKey: ['patch-findings'] }) })
   const resolve = useMutation({ mutationFn: api.resolvePatch, onSuccess: () => void client.invalidateQueries({ queryKey: ['patch-findings'] }) })
+  const patchAction = async (playbook: string, label: string) => {
+    const target = (hosts.data ?? []).find((host) => host.name === hostName)
+    if (!target) return
+    setPatchMessage(`${label} : lancement…`)
+    try {
+      const deployment = await api.createDeployment({ environment: target.environment, playbook, hosts: [target.name] })
+      setPatchMessage(`${label} : tâche ${deployment.id} en file`)
+      void client.invalidateQueries({ queryKey: ['deployments'] })
+    } catch (cause) {
+      setPatchMessage(`${label} : ${cause instanceof Error ? cause.message : 'échec'}`)
+    }
+  }
   if (isLoading) return <Loading label="Chargement des correctifs…" />
   if (error) return <div className="alert error">Impossible de charger les correctifs.</div>
   const open = data.filter((finding) => finding.status === 'open')
@@ -1411,6 +1486,19 @@ function Patching() {
         <StatCard label="Redémarrages requis" item={{ value: reboots, status: 'ok' }} icon={RefreshCw} tone="violet" />
         <StatCard label="Total findings" item={{ value: data.length, status: 'ok' }} icon={Database} hint="toutes sources" />
       </section>
+      <article className="panel">
+        <div className="panel-heading"><div><p className="eyebrow">Option 2</p><h2>Livepatch & mises à jour natives</h2></div><StatusBadge value={reboots ? 'warning' : 'success'} label={reboots ? `${formatNumber(reboots)} redémarrage(s) requis` : 'Aucun redémarrage requis'} /></div>
+        <div className="form-grid three">
+          <label>Hôte<select value={hostName} onChange={(event) => setHostName(event.target.value)}><option value="">Sélectionner</option>{(hosts.data ?? []).map((host) => <option key={host.id} value={host.name}>{host.name}</option>)}</select></label>
+          <div className="detail-card"><p className="eyebrow">Exposition noyau</p><strong>{kpis.data?.kernel_exposure_days.value ?? '—'} jour(s)</strong></div>
+          <div className="form-spacer"><button className="secondary" disabled={!hostName} onClick={() => void patchAction('livepatch-check.yml', 'Vérifier le livepatch')}>Vérifier le livepatch</button></div>
+        </div>
+        <div className="form-actions">
+          <button className="secondary" disabled={!hostName} onClick={() => void patchAction('patch-security.yml', 'Appliquer les correctifs')}>Appliquer les correctifs ciblés</button>
+          <button className="secondary" disabled={!hostName} onClick={() => void patchAction('verify.yml', 'Vérification')}>Vérifier l’état après application</button>
+        </div>
+        {patchMessage && <p className="host-import-note">{patchMessage}</p>}
+      </article>
       <article className="panel">
         <div className="panel-heading"><div><p className="eyebrow">Vulnérabilités</p><h2>Correctifs détectés</h2></div><span className="badge muted">{data.length}</span></div>
         <DataTable

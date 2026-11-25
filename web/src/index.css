@@ -1069,3 +1069,27 @@ textarea.ssh-key {
   .form-grid { padding: 16px; }
   th, td { padding-inline: 14px; }
 }
+
+/* Host fleet filtering, bulk preview and interactive terminal */
+.filter-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 14px 20px; border-bottom: 1px solid var(--border); }
+.filter-bar label { display: flex; align-items: center; gap: 8px; min-width: 260px; color: var(--muted); }
+.filter-bar label svg { width: 16px; height: 16px; }
+.filter-bar input, .filter-bar select, .bulk-actions button { min-height: 36px; }
+.filter-bar input { flex: 1; }
+.parc-summary { display: flex; flex-wrap: wrap; gap: 10px; padding: 16px 20px; }
+.checkbox-field { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.bulk-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 20px; background: var(--surface-tint); border-bottom: 1px solid var(--border); }
+.bulk-actions button { font-size: 12px; padding: 7px 11px; }
+.bulk-actions .badge { margin-right: 6px; }
+.row-invalid { opacity: .65; }
+.task-progress { display: flex; align-items: center; gap: 10px; padding: 10px 20px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--border); }
+.task-progress .spinner { width: 14px; height: 14px; border-width: 2px; }
+.drawer-backdrop { position: fixed; inset: 0; z-index: 50; display: flex; justify-content: flex-end; background: rgba(8, 18, 32, .55); backdrop-filter: blur(2px); }
+.terminal-drawer { display: flex; flex-direction: column; width: min(760px, 92vw); height: 100%; background: var(--surface); box-shadow: -18px 0 48px rgba(8, 18, 32, .22); }
+.terminal-drawer .panel-heading { flex-wrap: wrap; gap: 12px; }
+.terminal-drawer h2 { display: flex; align-items: center; gap: 10px; font-size: 17px; }
+.terminal-output { flex: 1; margin: 0; padding: 18px; overflow: auto; background: #0b1220; color: #d7e6f7; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
+.terminal-input { display: flex; align-items: center; gap: 8px; padding: 10px 16px; background: #0f1a2c; color: #7dd3fc; }
+.terminal-input input { flex: 1; border: 0; outline: 0; background: transparent; color: #e2e8f0; font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.terminal-note { margin: 0; padding: 10px 16px; color: var(--muted); font-size: 11px; }
+.button-link { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }

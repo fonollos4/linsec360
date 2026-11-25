@@ -32,8 +32,10 @@ export interface Host {
   status: string
   ansible_user: string
   ansible_port: number
+  ssh_key_reference: string
   ansible_password_configured: boolean
   groups: string[]
+  os: string | null
   ssh_status: string
   ssh_fingerprint: string | null
   ssh_error: string | null
@@ -46,26 +48,17 @@ export interface HostUpdateInput {
   status?: string
   ansible_user?: string
   ansible_port?: number
+  ssh_key_reference?: string
 }
 export interface HostImportItem {
   name: string
   ip: string
   environment: string
-  security_level: string
-  groups: string[]
-  ansible_user: string
-  ansible_port: number
-  ssh_fingerprint: string
-}
-export interface HostEnrollmentInput {
-  name: string
-  ip: string
-  environment: string
-  security_level: string
-  groups: string[]
-  ansible_user: string
-  ansible_port: number
-  password: string
+  security_level?: string
+  groups?: string[]
+  ansible_user?: string
+  ansible_port?: number
+  ssh_key_reference?: string
 }
 export interface HostImportResult {
   imported: Host[]
@@ -210,9 +203,9 @@ export interface SSHTest {
   ssh_status: string
   fingerprint: string | null
   fingerprint_changed: boolean
+  detected_os: string | null
   message: string
 }
-export interface SSHFingerprint { fingerprint: string }
 
 export const api = {
   login: (username: string, password: string) => mutating('/auth/login', 'POST', { username, password }),
@@ -229,20 +222,18 @@ export const api = {
   host: (id: number) => request<Host>(`/hosts/${id}`),
   hostPosture: (id: number) => request<HostPosture>(`/hosts/${id}/posture`),
   ansiblePublicKey: () => request<SSHPublicKey>('/hosts/ssh/public-key'),
-  scanHostFingerprint: (body: { ip: string; ansible_port: number }) =>
-    mutating<SSHFingerprint>('/hosts/ssh/fingerprint', 'POST', body),
-  enrollHost: (body: HostEnrollmentInput & { verified_fingerprint: string }) =>
-    mutating<Host>('/hosts/enroll', 'POST', body),
-  enrollExistingHostKey: (id: number, password: string) =>
-    mutating<Host>(`/hosts/${id}/ssh/enroll-key`, 'POST', { password }),
+  testHostConnection: (body: { name: string; ip: string; ansible_user: string; ansible_port: number }) =>
+    mutating<SSHTest>('/hosts/test-connection', 'POST', body),
   setHostAnsiblePassword: (id: number, password: string) =>
     mutating<Host>(`/hosts/${id}/ansible-credentials`, 'PUT', { password }),
   clearHostAnsiblePassword: (id: number) =>
     mutating<Host>(`/hosts/${id}/ansible-credentials`, 'DELETE'),
   testHostSSH: (id: number) => mutating<SSHTest>(`/hosts/${id}/ssh/test`, 'POST'),
-  acceptHostSSHFingerprint: (id: number, fingerprint: string) =>
-    mutating<SSHTest>(`/hosts/${id}/ssh/accept-fingerprint`, 'POST', { fingerprint }),
-  createHost: (body: { name: string; ip: string; environment: string; security_level: string; groups: string[]; ansible_user?: string; ansible_port?: number; ssh_fingerprint?: string }) =>
+  terminalUrl: (id: number) => {
+    const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    return `${scheme}//${window.location.host}${API_PREFIX}/hosts/${id}/terminal/ws`
+  },
+  createHost: (body: { name: string; ip: string; environment: string; security_level: string; groups: string[]; ansible_user?: string; ansible_port?: number; ssh_key_reference?: string }) =>
     mutating<Host>('/hosts', 'POST', body),
   importHosts: (hosts: HostImportItem[]) =>
     mutating<HostImportResult>('/hosts/import', 'POST', { hosts }),

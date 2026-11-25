@@ -141,23 +141,12 @@ def test_worker_runs_ansible_and_updates_state(
         captured["extra_vars"] = yaml.safe_load(
             Path(extra_vars_path).read_text(encoding="utf-8")
         )
-        known_hosts_path = kwargs["env"]["ANSIBLE_SSH_ARGS"].split(
-            "UserKnownHostsFile=", 1
-        )[1].split(" ", 1)[0]
-        captured["known_hosts"] = Path(known_hosts_path).read_text(encoding="utf-8")
         kwargs["stdout"].write("fake ansible output\n")
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(
         "backend.workers.deployment_worker.ssh_service.ensure_keypair",
         lambda: None,
-    )
-    monkeypatch.setattr(
-        "backend.workers.deployment_worker.ssh_service.scan_host_key",
-        lambda ip, port, expected_fingerprint=None: (
-            f"{ip} ssh-ed25519 AAAA",
-            "SHA256:" + "F" * 43,
-        ),
     )
     monkeypatch.setattr("backend.workers.deployment_worker.subprocess.run", fake_run)
 
@@ -179,9 +168,9 @@ def test_worker_runs_ansible_and_updates_state(
     command = captured["command"]
     assert "--limit" in command
     assert command[command.index("--limit") + 1] == "web01"
-    assert captured["known_hosts"] == "10.0.0.10 ssh-ed25519 AAAA\n"
-    assert captured["environment"]["ANSIBLE_HOST_KEY_CHECKING"] == "True"
-    assert "StrictHostKeyChecking=yes" in captured["environment"]["ANSIBLE_SSH_ARGS"]
+    assert captured["environment"]["ANSIBLE_HOST_KEY_CHECKING"] == "False"
+    assert "StrictHostKeyChecking=no" in captured["environment"]["ANSIBLE_SSH_ARGS"]
+    assert "UserKnownHostsFile=/dev/null" in captured["environment"]["ANSIBLE_SSH_ARGS"]
     assert "GlobalKnownHostsFile=/dev/null" in captured["environment"]["ANSIBLE_SSH_ARGS"]
     assert captured["extra_vars"]["linsec_wazuh_manager_address"] == "192.0.2.25"
     assert captured["extra_vars"]["linsec_wazuh_manager_agent_port"] == 1614
@@ -232,7 +221,7 @@ def test_worker_records_failure(client: TestClient, csrf_headers, monkeypatch):
         assert host.status == "error"
 
 
-def test_worker_blocks_changed_host_fingerprint(
+def test_worker_does_not_scan_or_pin_host_fingerprints(
     client: TestClient, csrf_headers, monkeypatch
 ):
     headers = csrf_headers()
@@ -244,17 +233,16 @@ def test_worker_blocks_changed_host_fingerprint(
     )
     monkeypatch.setattr(
         "backend.workers.deployment_worker.ssh_service.scan_host_key",
-        lambda ip, port, expected_fingerprint=None: (
-            f"{ip} ssh-ed25519 AAAA",
-            "SHA256:" + "G" * 43,
-        ),
-    )
-    monkeypatch.setattr(
-        "backend.workers.deployment_worker.subprocess.run",
         lambda *args, **kwargs: pytest.fail(
-            "Ansible must not run when the host fingerprint changed"
+            "deployment must not scan SSH host fingerprints"
         ),
     )
+
+    def fake_run(command, **kwargs):
+        kwargs["stdout"].write("fake ansible output\n")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("backend.workers.deployment_worker.subprocess.run", fake_run)
 
     from backend.workers.deployment_worker import run_deployment
 
@@ -263,8 +251,7 @@ def test_worker_blocks_changed_host_fingerprint(
     with session_scope() as db:
         deployment = db.get(models.Deployment, deployment_id)
         assert deployment is not None
-        assert deployment.status == "failed"
-        assert "fingerprint for web01 changed" in (deployment.error_message or "")
+        assert deployment.status == "succeeded"
 
 
 def test_worker_decrypts_password_into_private_temporary_inventory(

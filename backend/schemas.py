@@ -60,6 +60,7 @@ class HostCreate(BaseModel):
     status: Literal["pending", "deploying", "secured", "error", "unknown"] = "pending"
     ansible_user: str = Field(default="linsec-ansible", min_length=1, max_length=64)
     ansible_port: int = Field(default=22, ge=1, le=65535)
+    ssh_key_reference: str = Field(default="linsec-ansible", max_length=128)
     ssh_fingerprint: str | None = Field(default=None, max_length=64)
 
     @field_validator("name", "environment")
@@ -87,6 +88,14 @@ class HostCreate(BaseModel):
             raise ValueError("invalid SSH username")
         return value
 
+    @field_validator("ssh_key_reference")
+    @classmethod
+    def _ssh_key_reference(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned or any(character in cleaned for character in "\r\n\t\0"):
+            raise ValueError("invalid SSH key reference")
+        return cleaned
+
     @field_validator("ssh_fingerprint")
     @classmethod
     def _ssh_fingerprint(cls, value: str | None) -> str | None:
@@ -113,6 +122,7 @@ class HostUpdate(BaseModel):
     status: Literal["pending", "deploying", "secured", "error", "unknown"] | None = None
     ansible_user: str | None = Field(default=None, min_length=1, max_length=64)
     ansible_port: int | None = Field(default=None, ge=1, le=65535)
+    ssh_key_reference: str | None = Field(default=None, max_length=128)
 
     @field_validator("ansible_user")
     @classmethod
@@ -120,6 +130,16 @@ class HostUpdate(BaseModel):
         if value is not None and not IDENTIFIER.fullmatch(value):
             raise ValueError("invalid SSH username")
         return value
+
+    @field_validator("ssh_key_reference")
+    @classmethod
+    def _ssh_key_reference(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned or any(character in cleaned for character in "\r\n\t\0"):
+            raise ValueError("invalid SSH key reference")
+        return cleaned
 
     @field_validator("ip")
     @classmethod
@@ -162,6 +182,7 @@ class HostOut(ORMModel):
     added_date: datetime
     ansible_user: str = "linsec-ansible"
     ansible_port: int = 22
+    ssh_key_reference: str = "linsec-ansible"
     ansible_password_configured: bool = False
     ssh_status: str = "pending"
     ssh_fingerprint: str | None = None
@@ -194,7 +215,35 @@ class SSHTestOut(BaseModel):
     ssh_status: str
     fingerprint: str | None = None
     fingerprint_changed: bool = False
+    detected_os: str | None = None
     message: str
+
+
+class HostConnectionTestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=64)
+    ip: str
+    ansible_user: str = Field(default="linsec-ansible", max_length=64)
+    ansible_port: int = Field(default=22, ge=1, le=65535)
+
+    @field_validator("name", "ansible_user")
+    @classmethod
+    def _identifier(cls, value: str) -> str:
+        if not IDENTIFIER.fullmatch(value):
+            raise ValueError("invalid identifier")
+        return value
+
+    @field_validator("ip")
+    @classmethod
+    def _ipv4(cls, value: str) -> str:
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError as exc:
+            raise ValueError("invalid IPv4 address") from exc
+        if not isinstance(address, ipaddress.IPv4Address):
+            raise ValueError("invalid IPv4 address")
+        return value
 
 
 class SSHFingerprintApproval(BaseModel):

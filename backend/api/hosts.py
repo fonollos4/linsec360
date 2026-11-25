@@ -15,6 +15,7 @@ from ..schemas import (
     AgentOut,
     AnsibleCredentialsRequest,
     HardeningCheckOut,
+    HostConnectionTestRequest,
     HostCreate,
     HostImportOut,
     HostImportRequest,
@@ -376,6 +377,56 @@ def import_hosts(
     return HostImportOut(imported=imported, failed=failed)
 
 
+@router.post("/test-connection", response_model=SSHTestOut)
+def test_connection_before_create(
+    payload: HostConnectionTestRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(require_roles("admin", "operator")),
+) -> SSHTestOut:
+    """Check a target with the pre-provisioned service account before adding it.
+
+    No SSH fingerprint is scanned, pinned, or compared.
+    """
+    reachable, output, message = ssh_service.test_connection(
+        host_name=payload.name,
+        ip=payload.ip,
+        ansible_user=payload.ansible_user,
+        ansible_port=payload.ansible_port,
+    )
+    detected_os = None
+    if reachable:
+        detected_os = ssh_service.detect_distribution(
+            host_name=payload.name,
+            ip=payload.ip,
+            ansible_user=payload.ansible_user,
+            ansible_port=payload.ansible_port,
+        )
+    from ..services import audit_service
+
+    audit_service.record(
+        db,
+        actor=user,
+        action="host.ssh_test",
+        target_type="host",
+        target_id=payload.name,
+        data={
+            "ip": payload.ip,
+            "reachable": reachable,
+            "detected_os": detected_os,
+            "phase": "pre_create",
+        },
+        request=request,
+    )
+    db.commit()
+    return SSHTestOut(
+        reachable=reachable,
+        ssh_status="reachable" if reachable else "failed",
+        detected_os=detected_os,
+        message=message if reachable else output[:2000],
+    )
+
+
 @router.get("/{host_id}", response_model=HostOut)
 def get_host(
     host_id: int,
@@ -492,79 +543,6 @@ def test_host_ssh(
     user: models.User = Depends(require_roles("admin", "operator")),
 ) -> SSHTestOut:
     host = host_service.get_host(db, host_id)
-    scanned = ssh_service.scan_host_key(
-        host.ip,
-        host.ansible_port,
-        expected_fingerprint=host.ssh_fingerprint,
-    )
-    if scanned is None:
-        host.ssh_status = "failed"
-        host.ssh_error = "Unable to scan SSH fingerprint; connection was not attempted"
-        host.last_ssh_test_at = datetime.now(UTC)
-        db.commit()
-        db.refresh(host)
-        return SSHTestOut(
-            reachable=False,
-            ssh_status=host.ssh_status,
-            fingerprint=None,
-            message=host.ssh_error,
-        )
-    known_hosts_entry, fingerprint = scanned
-    if host.ssh_fingerprint is None:
-        host.ssh_status = "fingerprint_pending"
-        host.ssh_error = None
-        host.last_ssh_test_at = datetime.now(UTC)
-        db.commit()
-        db.refresh(host)
-        from ..services import audit_service
-
-        audit_service.record(
-            db,
-            actor=user,
-            action="host.ssh_fingerprint_discovered",
-            target_type="host",
-            target_id=host.id,
-            data={"fingerprint": fingerprint},
-            request=request,
-        )
-        db.commit()
-        return SSHTestOut(
-            reachable=False,
-            ssh_status=host.ssh_status,
-            fingerprint=fingerprint,
-            fingerprint_changed=False,
-            message=(
-                "Fingerprint discovered; compare it with a trusted source, "
-                "then approve the exact value"
-            ),
-        )
-    changed = bool(host.ssh_fingerprint != fingerprint)
-    if changed:
-        host.ssh_status = "fingerprint_changed"
-        host.ssh_error = "SSH host fingerprint changed; approval required"
-        host.last_ssh_test_at = datetime.now(UTC)
-        db.commit()
-        db.refresh(host)
-        from ..services import audit_service
-
-        audit_service.record(
-            db,
-            actor=user,
-            action="host.ssh_fingerprint_changed",
-            target_type="host",
-            target_id=host.id,
-            data={"previous": host.ssh_fingerprint, "current": fingerprint},
-            request=request,
-        )
-        db.commit()
-        return SSHTestOut(
-            reachable=False,
-            ssh_status=host.ssh_status,
-            fingerprint=fingerprint,
-            fingerprint_changed=True,
-            message="Fingerprint changed; SSH connection blocked",
-        )
-
     if host.ansible_password_encrypted is not None:
         password = credential_service.decrypt_password(
             host.ansible_password_encrypted
@@ -574,7 +552,7 @@ def test_host_ssh(
             port=host.ansible_port,
             user=host.ansible_user,
             password=password,
-            known_hosts_entry=known_hosts_entry,
+            known_hosts_entry="",
         )
         output = "SSH password authentication failed"
         message = "SSH password authentication successful"
@@ -584,13 +562,20 @@ def test_host_ssh(
             ip=host.ip,
             ansible_user=host.ansible_user,
             ansible_port=host.ansible_port,
-            known_hosts_entry=known_hosts_entry,
         )
+    detected_os = None
+    if reachable:
+        detected_os = ssh_service.detect_distribution(
+            host_name=host.name,
+            ip=host.ip,
+            ansible_user=host.ansible_user,
+            ansible_port=host.ansible_port,
+        )
+        if detected_os:
+            host.os = detected_os
     host.last_ssh_test_at = datetime.now(UTC)
     host.ssh_status = "reachable" if reachable else "failed"
     host.ssh_error = None if reachable else output[:512]
-    if reachable and fingerprint:
-        host.ssh_fingerprint = fingerprint
     db.commit()
     db.refresh(host)
 
@@ -602,15 +587,14 @@ def test_host_ssh(
         action="host.ssh_test",
         target_type="host",
         target_id=host.id,
-        data={"reachable": reachable, "fingerprint": fingerprint},
+        data={"reachable": reachable, "detected_os": detected_os},
         request=request,
     )
     db.commit()
     return SSHTestOut(
         reachable=reachable,
         ssh_status=host.ssh_status,
-        fingerprint=fingerprint,
-        fingerprint_changed=False,
+        detected_os=detected_os,
         message=message if reachable else output[:2000],
     )
 

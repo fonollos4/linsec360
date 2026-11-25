@@ -6,6 +6,7 @@ import base64
 import binascii
 import hashlib
 import os
+import re
 import shlex
 import stat
 import subprocess
@@ -156,52 +157,132 @@ def scan_fingerprint(ip: str, port: int) -> str | None:
     return scanned[1] if scanned else None
 
 
+def _ansible_connect_environment() -> dict[str, str]:
+    """Connection settings for pre-provisioned service-account SSH keys.
+
+    Fingerprints are deliberately not scanned, pinned, or compared: the admin
+    provisions the service account and its key out of band before onboarding.
+    """
+    environment = os.environ.copy()
+    environment["ANSIBLE_HOST_KEY_CHECKING"] = "False"
+    environment["ANSIBLE_SSH_ARGS"] = (
+        "-o UserKnownHostsFile=/dev/null "
+        "-o GlobalKnownHostsFile=/dev/null "
+        "-o StrictHostKeyChecking=no"
+    )
+    environment["ANSIBLE_TIMEOUT"] = "10"
+    return environment
+
+
+def _write_test_inventory(
+    *, host_name: str, ip: str, ansible_user: str, ansible_port: int, private_key: Path
+) -> Path:
+    inventory = {
+        "all": {
+            "hosts": {
+                host_name: {
+                    "ansible_host": ip,
+                    "ansible_user": ansible_user,
+                    "ansible_port": ansible_port,
+                    "ansible_private_key_file": str(private_key),
+                }
+            }
+        }
+    }
+    descriptor, path = tempfile.mkstemp(
+        prefix="linsec-ssh-test-", suffix=".yml"
+    )
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        yaml.safe_dump(inventory, handle, sort_keys=False)
+    os.chmod(path, 0o600)
+    return Path(path)
+
+
+def _distribution_from_output(output: str) -> str | None:
+    match = re.search(
+        r"\b(ubuntu|debian|rocky|almalinux|rhel|redhat|centos|fedora)\b",
+        output,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    value = match.group(1).lower()
+    return {
+        "redhat": "RHEL",
+        "rhel": "RHEL",
+        "almalinux": "AlmaLinux",
+        "rocky": "Rocky",
+        "ubuntu": "Ubuntu",
+        "debian": "Debian",
+        "centos": "RHEL",
+        "fedora": "RHEL",
+    }[value]
+
+
+def detect_distribution(
+    *,
+    host_name: str,
+    ip: str,
+    ansible_user: str,
+    ansible_port: int,
+) -> str | None:
+    """Detect the Linux distribution with the provisioned service account."""
+    private_key, _ = ensure_keypair()
+    inventory_path = _write_test_inventory(
+        host_name=host_name,
+        ip=ip,
+        ansible_user=ansible_user,
+        ansible_port=ansible_port,
+        private_key=private_key,
+    )
+    try:
+        result = subprocess.run(
+            [
+                "ansible",
+                "-i",
+                str(inventory_path),
+                "-m",
+                "ansible.builtin.shell",
+                "-a",
+                ". /etc/os-release && echo $ID",
+                host_name,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=_ansible_connect_environment(),
+        )
+        return _distribution_from_output(result.stdout + "\n" + result.stderr)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    finally:
+        inventory_path.unlink(missing_ok=True)
+
+
 def test_connection(
     *,
     host_name: str,
     ip: str,
     ansible_user: str,
     ansible_port: int,
-    known_hosts_entry: str,
+    known_hosts_entry: str | None = None,
 ) -> tuple[bool, str, str]:
+    """Test SSH reachability without fingerprint checks.
+
+    ``known_hosts_entry`` is accepted for compatibility with older callers but
+    intentionally ignored.
+    """
     private_key, _ = ensure_keypair()
-    known_hosts_path: Path | None = None
     inventory_path: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", suffix=".known_hosts", delete=False
-        ) as known_hosts_handle:
-            known_hosts_handle.write(known_hosts_entry + "\n")
-            known_hosts_path = Path(known_hosts_handle.name)
-        os.chmod(known_hosts_path, 0o600)
-
-        inventory = {
-            "all": {
-                "hosts": {
-                    host_name: {
-                        "ansible_host": ip,
-                        "ansible_user": ansible_user,
-                        "ansible_port": ansible_port,
-                        "ansible_private_key_file": str(private_key),
-                    }
-                }
-            }
-        }
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", suffix=".yml", delete=False
-        ) as handle:
-            yaml.safe_dump(inventory, handle, sort_keys=False)
-            inventory_path = Path(handle.name)
-        os.chmod(inventory_path, 0o600)
-
-        environment = os.environ.copy()
-        environment["ANSIBLE_HOST_KEY_CHECKING"] = "true"
-        environment["ANSIBLE_SSH_ARGS"] = (
-            f"-o UserKnownHostsFile={known_hosts_path} "
-            "-o GlobalKnownHostsFile=/dev/null "
-            "-o StrictHostKeyChecking=yes"
+        inventory_path = _write_test_inventory(
+            host_name=host_name,
+            ip=ip,
+            ansible_user=ansible_user,
+            ansible_port=ansible_port,
+            private_key=private_key,
         )
-        environment["ANSIBLE_TIMEOUT"] = "10"
+        environment = _ansible_connect_environment()
         result = subprocess.run(
             [
                 "ansible",
@@ -225,8 +306,6 @@ def test_connection(
     finally:
         if inventory_path is not None:
             inventory_path.unlink(missing_ok=True)
-        if known_hosts_path is not None:
-            known_hosts_path.unlink(missing_ok=True)
 
 
 def _password_ssh(

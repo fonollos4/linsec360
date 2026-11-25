@@ -5,6 +5,7 @@
 - [Implementation plan](architecture/implementation-plan.md)
 - [Product security workflow](architecture/product-security-workflow.md)
 - [Taskengine hardening and patching baseline](architecture/taskengine-automation.md)
+- [UI enrichment: hosts, terminal and operations](architecture/ui-enrichment.md)
 - [Uyuni deployment decision (historical)](architecture/uyuni-deployment.md)
 - [FastAPI backend](architecture/v2-backend.md)
 

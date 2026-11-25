@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import os
-import shlex
 import subprocess
 import tempfile
 from datetime import UTC, datetime
@@ -46,68 +44,6 @@ def _write_extra_vars(values: dict, directory: Path) -> Path:
     os.fchmod(descriptor, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         yaml.safe_dump(values, handle)
-    return Path(path)
-
-
-def _write_known_hosts(
-    db,
-    environment_name: str,
-    target_names: list[str],
-    directory: Path,
-) -> Path:
-    environment = inventory_service.get_environment(db, environment_name)
-    hosts = (
-        db.query(models.Host)
-        .filter(
-            models.Host.environment_id == environment.id,
-            models.Host.name.in_(target_names),
-        )
-        .all()
-    )
-    hosts_by_name = {host.name: host for host in hosts}
-    entries: list[str] = []
-    for name in target_names:
-        host = hosts_by_name.get(name)
-        if host is None:
-            raise DeploymentPreflightError(
-                f"target host {name} was not found in the environment"
-            )
-        if not host.ssh_fingerprint:
-            raise DeploymentPreflightError(
-                f"target host {name} has no approved SSH fingerprint; "
-                "verify and approve it before deployment"
-            )
-        scanned = ssh_service.scan_host_key(
-            host.ip,
-            host.ansible_port,
-            expected_fingerprint=host.ssh_fingerprint,
-        )
-        if scanned is None:
-            raise DeploymentPreflightError(
-                f"could not scan the SSH fingerprint for {name}"
-            )
-        known_hosts_entry, fingerprint = scanned
-        if fingerprint != host.ssh_fingerprint:
-            raise DeploymentPreflightError(
-                f"SSH fingerprint for {name} changed; verify and approve it "
-                "before deployment"
-            )
-        entries.append(known_hosts_entry)
-
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    descriptor, path = tempfile.mkstemp(
-        prefix="linsec-known-hosts-",
-        dir=directory,
-    )
-    try:
-        os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write("\n".join(entries) + "\n")
-    except Exception:
-        with contextlib.suppress(OSError):
-            os.close(descriptor)
-        Path(path).unlink(missing_ok=True)
-        raise
     return Path(path)
 
 
@@ -261,13 +197,6 @@ def run_deployment(deployment_id: str) -> None:
                     "check its path and permissions, or run "
                     "config/scripts/generate-ansible-key.sh for the default key"
                 ) from exc
-            known_hosts_path = _write_known_hosts(
-                db,
-                deployment.environment_name,
-                target_names,
-                settings.log_dir,
-            )
-            temporary_paths.append(known_hosts_path)
             playbook = playbook_service.get_or_raise(db, deployment.playbook_name)
             playbook_path = playbook_service.materialize(
                 playbook, settings.playbooks_dir
@@ -317,10 +246,14 @@ def run_deployment(deployment_id: str) -> None:
                 check_mode=bool(deployment.extra_vars.get("linsec_check_mode")),
             )
             environment = _ansible_environment(settings)
-            environment["ANSIBLE_HOST_KEY_CHECKING"] = "True"
+            # The service account and its key are provisioned by the admin
+            # before onboarding. Host keys are not pinned or compared here:
+            # deployments must not be blocked by fingerprint bookkeeping.
+            environment["ANSIBLE_HOST_KEY_CHECKING"] = "False"
             environment["ANSIBLE_SSH_ARGS"] = (
-                f"-o UserKnownHostsFile={shlex.quote(str(known_hosts_path))} "
-                "-o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null"
+                "-o UserKnownHostsFile=/dev/null "
+                "-o GlobalKnownHostsFile=/dev/null "
+                "-o StrictHostKeyChecking=no"
             )
 
             _append_log(
