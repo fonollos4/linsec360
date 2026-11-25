@@ -140,6 +140,13 @@ def create_host(
         ansible_user=payload.ansible_user,
         ansible_port=payload.ansible_port,
         ssh_key_reference=payload.ssh_key_reference,
+        ansible_password_encrypted=(
+            credential_service.encrypt_password(
+                payload.ansible_password.get_secret_value()
+            )
+            if payload.ansible_password is not None
+            else None
+        ),
         ssh_fingerprint=payload.ssh_fingerprint,
     )
     db.add(host)

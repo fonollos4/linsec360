@@ -75,6 +75,72 @@ def test_production_rejects_blank_credential_key():
         )
 
 
+def test_host_creation_accepts_an_encrypted_ansible_password(
+    client: TestClient, csrf_headers
+) -> None:
+    headers = csrf_headers()
+    response = client.post(
+        "/api/v1/hosts",
+        headers=headers,
+        json={
+            "name": "password01",
+            "ip": "10.0.0.91",
+            "environment": "production",
+            "security_level": "high",
+            "groups": ["linux"],
+            "ansible_user": "linsec-ansible",
+            "ansible_password": "DirectPassword123",
+        },
+    )
+    assert response.status_code == 201, response.text
+    body = response.text
+    assert "DirectPassword123" not in body
+    assert response.json()["ansible_password_configured"] is True
+    assert response.json()["credential_status"] == "ok"
+
+    with session_scope() as db:
+        host = db.query(models.Host).filter_by(name="password01").one()
+        assert host.ansible_password_encrypted is not None
+        assert "DirectPassword123" not in host.ansible_password_encrypted
+        assert (
+            credential_service.decrypt_password(host.ansible_password_encrypted)
+            == "DirectPassword123"
+        )
+
+    audit = client.get("/api/v1/audit?limit=20", headers=headers)
+    assert audit.status_code == 200
+    assert "DirectPassword123" not in audit.text
+
+
+def test_host_creation_ignores_an_empty_password(client: TestClient, csrf_headers) -> None:
+    response = client.post(
+        "/api/v1/hosts",
+        headers=csrf_headers(),
+        json={
+            "name": "nopassword01",
+            "ip": "10.0.0.92",
+            "environment": "production",
+            "ansible_password": "",
+        },
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["ansible_password_configured"] is False
+
+
+def test_host_creation_rejects_a_multiline_password(client: TestClient, csrf_headers) -> None:
+    response = client.post(
+        "/api/v1/hosts",
+        headers=csrf_headers(),
+        json={
+            "name": "badpassword01",
+            "ip": "10.0.0.93",
+            "environment": "production",
+            "ansible_password": "line-one\nline-two",
+        },
+    )
+    assert response.status_code == 422
+
+
 def test_credential_status_distinguishes_missing_ok_and_undecryptable():
     good = credential_service.encrypt_password("known-secret")
     other = Fernet(Fernet.generate_key()).encrypt(b"other-secret").decode("ascii")

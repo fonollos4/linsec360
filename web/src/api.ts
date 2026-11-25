@@ -267,7 +267,7 @@ export const api = {
     const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     return `${scheme}//${window.location.host}${API_PREFIX}/hosts/${id}/terminal/ws`
   },
-  createHost: (body: { name: string; ip: string; environment: string; security_level: string; groups: string[]; ansible_user?: string; ansible_port?: number; ssh_key_reference?: string }) =>
+  createHost: (body: { name: string; ip: string; environment: string; security_level: string; groups: string[]; ansible_user?: string; ansible_port?: number; ssh_key_reference?: string; ansible_password?: string }) =>
     mutating<Host>('/hosts', 'POST', body),
   importHosts: (hosts: HostImportItem[]) =>
     mutating<HostImportResult>('/hosts/import', 'POST', { hosts }),

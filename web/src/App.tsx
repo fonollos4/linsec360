@@ -793,7 +793,7 @@ function Hosts() {
   const [terminalHost, setTerminalHost] = useState<Host | null>(null)
   const [bootstrapAfterAdd, setBootstrapAfterAdd] = useState(false)
   const [bulkOptions, setBulkOptions] = useState(defaultBulkOptions)
-  const [form, setForm] = useState({ ...defaultBulkOptions, groups: '', name: '', ip: '', security_level: 'high' })
+  const [form, setForm] = useState({ ...defaultBulkOptions, groups: '', name: '', ip: '', security_level: 'high', ansible_password: '' })
   const [editForm, setEditForm] = useState({ ip: '', security_level: 'high', groups: '', ansible_user: 'linsec-ansible', ansible_port: 22, ssh_key_reference: 'linsec-ansible' })
   const [testResult, setTestResult] = useState<{ state: 'idle' | 'testing' | 'ok' | 'failed'; message: string }>({ state: 'idle', message: '' })
   const [notice, setNotice] = useState('')
@@ -818,12 +818,13 @@ function Hosts() {
       ansible_user: form.ansible_user,
       ansible_port: form.ansible_port,
       ssh_key_reference: form.ssh_key_reference,
+      ansible_password: form.ansible_password.trim() || undefined,
     }),
     onSuccess: async (host) => {
       setNotice(`${host.name} ajouté à l’inventaire Ansible.`)
       notify({ tone: 'success', title: 'Hôte ajouté', message: `${host.name} est dans l’inventaire Ansible.` })
       setShowForm(false)
-      setForm({ ...defaultBulkOptions, groups: '', name: '', ip: '', security_level: 'high' })
+      setForm({ ...defaultBulkOptions, groups: '', name: '', ip: '', security_level: 'high', ansible_password: '' })
       setTestResult({ state: 'idle', message: '' })
       if (bootstrapAfterAdd && defaultPlaybook) {
         try {
@@ -1086,7 +1087,18 @@ function Hosts() {
             <label>Utilisateur SSH (service)<input value={form.ansible_user} onChange={(event) => setForm({ ...form, ansible_user: event.target.value })} /></label>
             <label>Port SSH<input type="number" min="1" max="65535" value={form.ansible_port} onChange={(event) => setForm({ ...form, ansible_port: Number(event.target.value) })} /></label>
             <label>Référence de clé SSH<input value={form.ssh_key_reference} onChange={(event) => setForm({ ...form, ssh_key_reference: event.target.value })} placeholder="linsec-ansible" /></label>
+            <label>Mot de passe Ansible
+              <input
+                type="password"
+                autoComplete="new-password"
+                maxLength={256}
+                value={form.ansible_password}
+                onChange={(event) => setForm({ ...form, ansible_password: event.target.value })}
+                placeholder="Optionnel — chiffré à l’ajout"
+              />
+            </label>
           </div>
+          <p className="host-import-note">Le mot de passe est chiffré avant stockage et n’est jamais réaffiché. Laissez le champ vide pour utiliser uniquement la clé SSH.</p>
           <div className="form-actions">
             <button className="secondary" disabled={testConnection.isPending || !form.ip} onClick={() => testConnection.mutate()}>{testConnection.isPending ? 'Test…' : 'Tester la connexion / détecter l’OS'}</button>
             <label className="checkbox-field"><input type="checkbox" checked={bootstrapAfterAdd} onChange={(event) => setBootstrapAfterAdd(event.target.checked)} /> Déployer après ajout</label>

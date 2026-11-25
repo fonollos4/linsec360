@@ -61,6 +61,9 @@ class HostCreate(BaseModel):
     ansible_user: str = Field(default="linsec-ansible", min_length=1, max_length=64)
     ansible_port: int = Field(default=22, ge=1, le=65535)
     ssh_key_reference: str = Field(default="linsec-ansible", max_length=128)
+    # Optional direct entry from the "Ajout unitaire" form. The value is
+    # encrypted before persistence and never returned by any API.
+    ansible_password: SecretStr | None = Field(default=None, max_length=256)
     ssh_fingerprint: str | None = Field(default=None, max_length=64)
 
     @field_validator("name", "environment")
@@ -95,6 +98,18 @@ class HostCreate(BaseModel):
         if not cleaned or any(character in cleaned for character in "\r\n\t\0"):
             raise ValueError("invalid SSH key reference")
         return cleaned
+
+    @field_validator("ansible_password")
+    @classmethod
+    def _ansible_password(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is None:
+            return None
+        secret = value.get_secret_value()
+        if not secret.strip():
+            return None
+        if any(character in secret for character in ("\x00", "\r", "\n")):
+            raise ValueError("password must be a single line")
+        return value
 
     @field_validator("ssh_fingerprint")
     @classmethod
