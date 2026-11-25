@@ -546,10 +546,15 @@ def test_host_ssh(
     user: models.User = Depends(require_roles("admin", "operator")),
 ) -> SSHTestOut:
     host = host_service.get_host(db, host_id)
+    password = None
     if host.ansible_password_encrypted is not None:
-        password = credential_service.decrypt_password(
-            host.ansible_password_encrypted
-        )
+        try:
+            password = credential_service.decrypt_password(
+                host.ansible_password_encrypted
+            )
+        except IntegrationUnavailable:
+            password = None
+    if password is not None:
         reachable = ssh_service.test_password_connection(
             ip=host.ip,
             port=host.ansible_port,
@@ -566,6 +571,11 @@ def test_host_ssh(
             ansible_user=host.ansible_user,
             ansible_port=host.ansible_port,
         )
+        if host.ansible_password_encrypted is not None:
+            message = (
+                "Stored password is unreadable; tested with the SSH key only. "
+                "Restore the encryption key or re-enter the credential."
+            )
     detected_os = None
     if reachable:
         detected_os = ssh_service.detect_distribution(

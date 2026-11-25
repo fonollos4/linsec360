@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..errors import ConflictError, NotFoundError
 from ..schemas import HostCreate, HostOut, HostUpdate
-from . import audit_service
+from . import audit_service, credential_service
 
 
 def _get_or_create_environment(db: Session, name: str) -> models.Environment:
@@ -59,6 +59,9 @@ def serialize(host: models.Host) -> HostOut:
         ansible_port=host.ansible_port,
         ssh_key_reference=host.ssh_key_reference,
         ansible_password_configured=host.ansible_password_encrypted is not None,
+        credential_status=credential_service.password_status(
+            host.ansible_password_encrypted
+        ),
         ssh_status=host.ssh_status,
         ssh_fingerprint=host.ssh_fingerprint,
         ssh_error=host.ssh_error,

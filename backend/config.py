@@ -13,10 +13,19 @@ from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import quote, urlsplit
 
+from cryptography.fernet import Fernet
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parents[1]
+
+
+def _fernet_accepts(key: str) -> bool:
+    try:
+        Fernet(key.encode("ascii"))
+    except (ValueError, UnicodeEncodeError):
+        return False
+    return True
 
 
 class Settings(BaseSettings):
@@ -223,10 +232,25 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "LINSEC_SECRET_KEY must be set when LINSEC_ENVIRONMENT=production"
                 )
-            if self.credential_encryption_key is None:
+            raw_key = (
+                self.credential_encryption_key.get_secret_value()
+                if self.credential_encryption_key is not None
+                else ""
+            )
+            if not raw_key.strip():
                 raise ValueError(
                     "LINSEC_CREDENTIAL_ENCRYPTION_KEY must be set when "
                     "LINSEC_ENVIRONMENT=production"
+                )
+            # Fail at startup rather than during a deployment when the key is
+            # not a usable Fernet key (e.g. an unpadded token_urlsafe value).
+            candidates = [raw_key]
+            if len(raw_key) == 43:
+                candidates.append(raw_key + "=")
+            if not any(_fernet_accepts(candidate) for candidate in candidates):
+                raise ValueError(
+                    "LINSEC_CREDENTIAL_ENCRYPTION_KEY must be a valid Fernet "
+                    "key (32 url-safe base64-encoded bytes)"
                 )
             if self.cookie_secure is False:
                 raise ValueError(

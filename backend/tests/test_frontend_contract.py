@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 API_TS = ROOT / "web" / "src" / "api.ts"
 APP_TSX = ROOT / "web" / "src" / "App.tsx"
+INDEX_CSS = ROOT / "web" / "src" / "index.css"
 NGINX_LOCATIONS = ROOT / "web" / "snippets" / "linsec-locations.conf"
 
 
@@ -76,3 +77,44 @@ def test_frontend_points_compliance_and_patching_to_current_playbooks() -> None:
     assert "Option 2" not in source
     assert "Patching — Option 2" not in source
     assert "refreshAfterDeployment" in source
+
+
+def test_sidebar_can_be_collapsed_and_expanded() -> None:
+    source = APP_TSX.read_text(encoding="utf-8")
+    css = INDEX_CSS.read_text(encoding="utf-8")
+
+    assert "linsec:sidebar-collapsed" in source
+    assert "data-sidebar" in source
+    assert 'aria-controls="main-nav"' in source
+    assert 'id="main-nav"' in source
+    assert "--sidebar-width" in css
+    assert '.app[data-sidebar="collapsed"]' in css
+
+
+def test_long_forms_open_in_an_accessible_modal() -> None:
+    source = APP_TSX.read_text(encoding="utf-8")
+
+    assert "createPortal" in source
+    assert 'role="dialog"' in source
+    assert 'aria-modal="true"' in source
+    assert "'Escape'" in source
+    assert "modal-backdrop" in source
+
+
+def test_playbook_editor_opens_beside_the_library() -> None:
+    source = APP_TSX.read_text(encoding="utf-8")
+    css = INDEX_CSS.read_text(encoding="utf-8")
+
+    assert 'className="playbook-workspace"' in source
+    assert 'className="playbook-editor-area"' in source
+    assert ".playbook-workspace" in css
+    assert ".playbook-editor-area" in css
+
+
+def test_patch_actions_explain_and_track_their_deployments() -> None:
+    source = APP_TSX.read_text(encoding="utf-8")
+
+    assert "Suivre l\u2019exécution" in source
+    assert "patchBusy" in source
+    assert "/deployments/${" in source
+    assert "Vérification en lecture seule" in source

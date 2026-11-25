@@ -70,7 +70,8 @@ def _deployment_passwords(
     db,
     environment_name: str,
     target_names: list[str],
-) -> dict[str, str]:
+) -> tuple[dict[str, str], list[str]]:
+    """Return usable passwords and hosts that must fall back to SSH keys."""
     environment = inventory_service.get_environment(db, environment_name)
     hosts = (
         db.query(models.Host)
@@ -81,6 +82,7 @@ def _deployment_passwords(
         .all()
     )
     passwords: dict[str, str] = {}
+    unavailable: list[str] = []
     for host in hosts:
         if host.ansible_password_encrypted is None:
             continue
@@ -88,12 +90,16 @@ def _deployment_passwords(
             passwords[host.name] = credential_service.decrypt_password(
                 host.ansible_password_encrypted
             )
-        except IntegrationUnavailable as exc:
-            raise DeploymentPreflightError(
-                f"stored Ansible credentials for {host.name} could not be decrypted; "
-                "verify LINSEC_CREDENTIAL_ENCRYPTION_KEY"
-            ) from exc
-    return passwords
+        except IntegrationUnavailable:
+            # One unreadable credential must not block every target. The
+            # inventory generator falls back to the configured SSH key when a
+            # password is absent; surface the exception with a warning event.
+            unavailable.append(host.name)
+            logger.warning(
+                "stored credentials for host %s are unreadable; using SSH key only",
+                host.name,
+            )
+    return passwords, unavailable
 
 
 def _ansible_environment(settings) -> dict[str, str]:
@@ -220,17 +226,33 @@ def run_deployment(deployment_id: str) -> None:
             playbook_path = playbook_service.materialize(
                 playbook, settings.playbooks_dir
             )
+            passwords, unavailable_hosts = _deployment_passwords(
+                db,
+                deployment.environment_name,
+                target_names,
+            )
             inventory_path = inventory_service.write_deployment_inventory(
                 db,
                 deployment.environment_name,
-                _deployment_passwords(
-                    db,
-                    deployment.environment_name,
-                    target_names,
-                ),
+                passwords,
                 Path(tempfile.gettempdir()),
             )
             temporary_paths.append(inventory_path)
+            if unavailable_hosts:
+                warning_message = (
+                    "Stored credentials could not be decrypted; using SSH key only "
+                    f"for: {', '.join(unavailable_hosts)}"
+                )
+                _append_log(log_path, f"warning={warning_message}\n")
+                deployment.events.append(
+                    models.DeploymentEvent(
+                        level="warning",
+                        event="credentials_unavailable",
+                        message=warning_message,
+                        data={"hosts": unavailable_hosts},
+                    )
+                )
+                db.commit()
             settings.artifacts_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
             env_vars_path = _write_extra_vars(
                 {

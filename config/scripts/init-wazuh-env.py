@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Initialize missing secrets in a LinSec360 .env file."""
 
-from pathlib import Path
 import argparse
+import base64
 import secrets
 import string
+import sys
+from pathlib import Path
 
 try:
     import bcrypt
@@ -95,17 +97,46 @@ def generate_wazuh_password() -> str:
     return "".join(characters)
 
 
+def _valid_fernet_key(value: str) -> bool:
+    """Fernet requires 32 url-safe base64 bytes, padded to 44 characters."""
+    if len(value) != 44 or not value.endswith("="):
+        return False
+    try:
+        return len(base64.urlsafe_b64decode(value.encode("ascii"))) == 32
+    except (ValueError, UnicodeEncodeError):
+        return False
+
+
+def _generate_fernet_key() -> str:
+    return base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii")
+
+
 def initialize(path: Path = ENV_PATH) -> list[str]:
     values = read_env(path)
     initialized: list[str] = []
 
     for key in RANDOM_SECRET_KEYS:
-        if not values.get(key):
+        current = values.get(key)
+        if key == "LINSEC_CREDENTIAL_ENCRYPTION_KEY":
+            # An unusable key never encrypted anything: replace it so the
+            # application can start, and report the rotation to the operator.
+            if current and _valid_fernet_key(current):
+                continue
+            if current:
+                print(
+                    "WARNING: LINSEC_CREDENTIAL_ENCRYPTION_KEY is not a valid "
+                    "Fernet key; generating a new one. Credentials encrypted "
+                    "with another key must be re-entered from the UI.",
+                    file=sys.stderr,
+                )
+            value = _generate_fernet_key()
+            write_env_value(path, key, value)
+            values[key] = value
+            initialized.append(key)
+            continue
+        if not current:
             if key == "LINSEC_SECRET_KEY":
                 value = secrets.token_hex(32)
-            elif key == "LINSEC_CREDENTIAL_ENCRYPTION_KEY":
-                # Fernet expects 32 url-safe base64 encoded random bytes.
-                value = secrets.token_urlsafe(32)
             else:
                 value = secrets.token_urlsafe(24)
             write_env_value(path, key, value)

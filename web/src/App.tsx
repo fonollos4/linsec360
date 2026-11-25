@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useId, useEffect, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity,
   ArrowUpRight,
   Bell,
   Boxes,
+  ChevronLeft,
   ChevronRight,
   Cpu,
   Database,
@@ -26,10 +28,11 @@ import {
   Terminal,
   TriangleAlert,
   UserRound,
+  X,
   type LucideIcon,
 } from 'lucide-react'
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { Navigate, NavLink, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
   api,
   type Alert,
@@ -76,6 +79,7 @@ const navGroups: Array<{ label: string; items: NavItem[] }> = [
   },
 ]
 
+const SIDEBAR_STORAGE_KEY = 'linsec:sidebar-collapsed'
 const hostIdentifier = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/
 
 type PatchTarget = { package: string; cve: string; fixed_version: string }
@@ -440,16 +444,94 @@ function Loading({ label = 'Chargement…' }: { label?: string }) {
   return <div className="loading"><span className="spinner" />{label}</div>
 }
 
+function Modal({ eyebrow, title, description, onClose, children }: {
+  eyebrow: string
+  title: string
+  description?: string
+  onClose: () => void
+  children: ReactNode
+}) {
+  const titleId = useId()
+  const dialogRef = useRef<HTMLDivElement | null>(null)
+  const onCloseRef = useRef(onClose)
+  useEffect(() => { onCloseRef.current = onClose }, [onClose])
+
+  useEffect(() => {
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onCloseRef.current()
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    dialogRef.current?.querySelector<HTMLElement>('input, select, textarea, button, a[href]')?.focus()
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+      document.body.style.overflow = previousOverflow
+      previouslyFocused?.focus()
+    }
+  }, [])
+
+  return createPortal(
+    <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onCloseRef.current() }}>
+      <div className="modal" role="dialog" aria-modal="true" aria-labelledby={titleId} ref={dialogRef}>
+        <div className="panel-heading">
+          <div><p className="eyebrow">{eyebrow}</p><h2 id={titleId}>{title}</h2></div>
+          <button className="icon-button" aria-label="Fermer la fenêtre" onClick={onClose}><X /></button>
+        </div>
+        <div className="modal-body">
+          {description && <p className="host-import-note">{description}</p>}
+          {children}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+type TaskFeedbackState = {
+  label: string
+  id?: string
+  state: 'pending' | 'queued' | 'succeeded' | 'failed' | 'cancelled' | 'error'
+  message: string
+}
+
+function TaskFeedback({ task }: { task: TaskFeedbackState | null }) {
+  if (!task) return null
+  const tone = task.state === 'succeeded' ? 'success'
+    : ['failed', 'cancelled', 'error'].includes(task.state) ? 'error'
+      : 'info'
+  return (
+    <div className={`task-feedback ${tone}`} role="status" aria-live="polite">
+      {['pending', 'queued'].includes(task.state) && <span className="spinner" />}
+      <div className="task-feedback-copy">
+        <strong>{task.label}</strong>
+        <span>{task.message}</span>
+        {task.id && <Link to={`/deployments/${task.id}`}>Suivre l’exécution <ArrowUpRight /></Link>}
+      </div>
+    </div>
+  )
+}
+
+function taskFromDeployment(label: string, job: Deployment | undefined, id: string): TaskFeedbackState {
+  if (!job) return { label, id, state: 'error', message: 'Statut indisponible ; consultez le déploiement.' }
+  if (job.status === 'succeeded') return { label, id, state: 'succeeded', message: 'Terminé avec succès.' }
+  if (job.status === 'failed') return { label, id, state: 'failed', message: job.error_message || 'Échec du déploiement.' }
+  if (job.status === 'cancelled') return { label, id, state: 'cancelled', message: 'Déploiement annulé.' }
+  return { label, id, state: 'queued', message: `Tâche ${id} en cours (${humanize(job.status)}).` }
+}
+
 const TERMINAL_DEPLOYMENT_STATUSES = new Set(['succeeded', 'failed', 'cancelled'])
 
 async function refreshAfterDeployment(
   client: ReturnType<typeof useQueryClient>,
   deploymentId: string,
   queryKeys: Array<Array<string | number>>,
-) {
+): Promise<Deployment | undefined> {
+  let job: Deployment | undefined
   for (let attempt = 0; attempt < 180; attempt += 1) {
     try {
-      const job = await api.deployment(deploymentId)
+      job = await api.deployment(deploymentId)
       if (TERMINAL_DEPLOYMENT_STATUSES.has(job.status)) break
     } catch {
       break
@@ -457,6 +539,7 @@ async function refreshAfterDeployment(
     await new Promise((resolve) => setTimeout(resolve, 2000))
   }
   await Promise.all(queryKeys.map((queryKey) => client.invalidateQueries({ queryKey })))
+  return job
 }
 
 function Login({ onLogin }: { onLogin: () => void }) {
@@ -928,8 +1011,12 @@ function Hosts() {
       {notice && <div className="alert success">{notice}</div>}
 
       {showImport && canManageHosts && (
-        <article className="panel form-panel host-import">
-          <div className="panel-heading"><div><p className="eyebrow">Import en masse</p><h2>Prévisualiser puis ajouter les hôtes</h2></div><StatusBadge value="pending" label="Validation avant ajout" /></div>
+        <Modal
+          eyebrow="Import en masse"
+          title="Prévisualiser puis ajouter les hôtes"
+          description="Validation avant ajout : les lignes en erreur ou désélectionnées ne sont pas importées."
+          onClose={() => { setShowImport(false); setNotice('') }}
+        >
           <p className="host-import-note">Collez une liste d’IP/noms, un CSV avec en-têtes (<code>name,ip,environment,groups,ansible_user,ansible_port,ssh_key_reference</code>) ou un JSON. Format court : <code>hostname,ip,ssh_user,group,environment</code>. Les lignes en erreur ou désélectionnées ne sont pas importées. Le compte de service SSH doit déjà exister sur les cibles.</p>
           <div className="form-grid three">
             <label>Environnement par défaut<select value={bulkOptions.environment} onChange={(event) => setBulkOptions({ ...bulkOptions, environment: event.target.value })}><option>production</option><option>staging</option><option>development</option></select></label>
@@ -968,12 +1055,16 @@ function Hosts() {
             <button className="primary" disabled={bulkImport.isPending || !bulkRows.some((row) => row.valid && row.selected)} onClick={() => bulkImport.mutate()}>{bulkImport.isPending ? 'Ajout en cours…' : `Ajouter ${bulkRows.filter((row) => row.valid && row.selected).length} hôte(s)`}</button>
           </div>
           {bulkImport.isError && <div className="alert error">{bulkImport.error instanceof Error ? bulkImport.error.message : 'Import impossible.'}</div>}
-        </article>
+        </Modal>
       )}
 
       {showForm && canManageHosts && (
-        <article className="panel form-panel">
-          <div className="panel-heading"><div><p className="eyebrow">Nouvel hôte</p><h2>Ajout unitaire</h2></div><StatusBadge value="pending" label="Compte de service requis" /></div>
+        <Modal
+          eyebrow="Nouvel hôte"
+          title="Ajout unitaire"
+          description="Le compte de service SSH doit déjà exister sur la cible."
+          onClose={() => setShowForm(false)}
+        >
           <div className="form-grid">
             <label>Nom / alias<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
             <label>Adresse IP<input value={form.ip} onChange={(event) => { setForm({ ...form, ip: event.target.value }); setTestResult({ state: 'idle', message: '' }) }} /></label>
@@ -991,12 +1082,11 @@ function Hosts() {
           {testResult.state !== 'idle' && <div className={`alert ${testResult.state === 'ok' ? 'success' : testResult.state === 'failed' ? 'error' : ''}`}>{testResult.message}</div>}
           {createHost.isError && <div className="alert error">{createHost.error instanceof Error ? createHost.error.message : 'Ajout impossible.'}</div>}
           <div className="form-actions"><button className="secondary" onClick={() => setShowForm(false)}>Annuler</button><button className="primary" disabled={createHost.isPending || !form.name || !form.ip || !form.ansible_user} onClick={() => createHost.mutate()}>{createHost.isPending ? 'Ajout…' : 'Ajouter l’hôte'}</button></div>
-        </article>
+        </Modal>
       )}
 
       {editingHost && (
-        <article className="panel form-panel">
-          <div className="panel-heading"><div><p className="eyebrow">Édition</p><h2>Modifier {editingHost.name}</h2></div></div>
+        <Modal eyebrow="Édition" title={`Modifier ${editingHost.name}`} onClose={() => setEditingHost(null)}>
           <div className="form-grid">
             <label>Adresse IP<input value={editForm.ip} onChange={(event) => setEditForm({ ...editForm, ip: event.target.value })} /></label>
             <label>Niveau de sécurité<select value={editForm.security_level} onChange={(event) => setEditForm({ ...editForm, security_level: event.target.value })}><option>low</option><option>medium</option><option>high</option><option>critical</option></select></label>
@@ -1007,7 +1097,7 @@ function Hosts() {
           </div>
           {updateHost.isError && <div className="alert error">{updateHost.error instanceof Error ? updateHost.error.message : 'Modification impossible.'}</div>}
           <div className="form-actions"><button className="secondary" onClick={() => setEditingHost(null)}>Annuler</button><button className="primary" disabled={updateHost.isPending || !editForm.ip} onClick={() => updateHost.mutate({ id: editingHost.id, body: { ...editForm, groups: editForm.groups.split(',').map((group) => group.trim()).filter(Boolean) } })}>Enregistrer</button></div>
-        </article>
+        </Modal>
       )}
 
       {terminalHost && <HostTerminal host={terminalHost} onClose={() => setTerminalHost(null)} />}
@@ -1144,7 +1234,8 @@ function HostDetail() {
   const posture = useQuery({ queryKey: ['host-posture', id], queryFn: () => api.hostPosture(id), enabled: Number.isInteger(id) })
   const stack = useQuery({ queryKey: ['stack-configuration'], queryFn: api.stackConfiguration })
   const [terminalOpen, setTerminalOpen] = useState(false)
-  const [actionStates, setActionStates] = useState<Record<string, string>>({})
+  const [actionTask, setActionTask] = useState<TaskFeedbackState | null>(null)
+  const [actionBusy, setActionBusy] = useState(false)
   const [testMessage, setTestMessage] = useState('')
 
   if (host.isLoading) return <Loading label="Chargement de la fiche hôte…" />
@@ -1153,7 +1244,9 @@ function HostDetail() {
   const current = host.data
   const currentPosture = posture.data
   const launch = async (playbook: string, label: string, extraVars: Record<string, string> = {}) => {
-    setActionStates((states) => ({ ...states, [label]: 'En cours…' }))
+    if (actionBusy) return
+    setActionBusy(true)
+    setActionTask({ label, state: 'pending', message: 'Mise en file…' })
     try {
       const deployment = await api.createDeployment({
         environment: current.environment,
@@ -1161,16 +1254,19 @@ function HostDetail() {
         hosts: [current.name],
         extra_vars: extraVars,
       })
-      setActionStates((states) => ({ ...states, [label]: `Tâche ${deployment.id} en file` }))
+      setActionTask({ label, id: deployment.id, state: 'queued', message: `Tâche ${deployment.id} en file` })
       void client.invalidateQueries({ queryKey: ['deployments'] })
-      void refreshAfterDeployment(client, deployment.id, [
+      const job = await refreshAfterDeployment(client, deployment.id, [
         ['host-posture', id],
         ['hosts'],
         ['kpis'],
         ['deployments'],
       ])
+      setActionTask(taskFromDeployment(label, job, deployment.id))
     } catch (cause) {
-      setActionStates((states) => ({ ...states, [label]: cause instanceof Error ? cause.message : 'Échec' }))
+      setActionTask({ label, state: 'error', message: cause instanceof Error ? cause.message : 'Échec' })
+    } finally {
+      setActionBusy(false)
     }
   }
   const pendingFindings = currentPosture?.patch_findings.filter((finding) => finding.status !== 'resolved') ?? []
@@ -1193,6 +1289,7 @@ function HostDetail() {
         </>}
       />
       {current.environment === 'production' && <div className="alert warning"><TriangleAlert /> Hôte de production : toute remédiation peut impacter SSH, le pare-feu ou des services métier.</div>}
+      {current.credential_status === 'undecryptable' && <div className="alert warning"><TriangleAlert /> Mot de passe Ansible stocké illisible : les déploiements utilisent la clé SSH. Saisissez à nouveau le mot de passe via l’API si l’authentification par mot de passe est requise.</div>}
       <div className="metrics-grid three">
         <StatCard label="Conformité OpenSCAP" item={{ value: currentPosture?.compliance?.score ?? null, status: currentPosture?.compliance ? 'ok' : 'unknown' }} icon={ShieldCheck} tone="success" suffix="%" />
         <StatCard label="Agent Wazuh" item={{ value: currentPosture?.agent ? 1 : 0, status: currentPosture?.agent?.status === 'active' ? 'ok' : 'unknown' }} icon={Radar} tone="cyan" hint={currentPosture?.agent?.status ?? 'aucun agent'} />
@@ -1220,9 +1317,9 @@ function HostDetail() {
               setTestMessage(cause instanceof Error ? cause.message : 'Test impossible.')
             }
           }}>Tester la connexion / détecter l’OS</button>
-          <button className="secondary" onClick={() => void launch('wazuh-agent.yml', 'Agent Wazuh')}>Installer / mettre à jour l’agent Wazuh</button>
-          <button className="secondary" onClick={() => void launch('verify.yml', 'Baseline')}>Vérifier la baseline</button>
-          <button className="secondary" onClick={() => void launch('site.yml', 'Baseline')}>Appliquer la baseline</button>
+          <button className="secondary" disabled={actionBusy} onClick={() => void launch('wazuh-agent.yml', 'Agent Wazuh')}>Installer / mettre à jour l’agent Wazuh</button>
+          <button className="secondary" disabled={actionBusy} onClick={() => void launch('verify.yml', 'Baseline')}>Vérifier la baseline</button>
+          <button className="secondary" disabled={actionBusy} onClick={() => void launch('site.yml', 'Baseline')}>Appliquer la baseline</button>
         </div>
         {testMessage && <p className="host-import-note">{testMessage}</p>}
       </article>
@@ -1231,11 +1328,11 @@ function HostDetail() {
         <div className="panel-heading"><div><p className="eyebrow">Durcissement</p><h2>OpenSCAP — audit, remédiation, re-contrôle</h2></div><StatusBadge value={currentPosture?.compliance?.status ?? 'unknown'} /></div>
         <p className="host-import-note">Les rapports avant/après sont générés dans <code>/var/log/linsec360/</code>. La remédiation filtre les règles qui coupent SSH et n’ouvre pas les ports Wazuh 1514/1515.</p>
         <div className="form-actions">
-          <button className="secondary" onClick={() => void launch('openscap-scan.yml', 'Audit', openscapExtraVars)}>1. Auditer (Scan)</button>
-          <button className="danger" onClick={() => {
+          <button className="secondary" disabled={actionBusy} onClick={() => void launch('openscap-scan.yml', 'Audit', openscapExtraVars)}>1. Auditer (Scan)</button>
+          <button className="danger" disabled={actionBusy} onClick={() => {
             if (window.confirm('La remédiation peut modifier SSH, le pare-feu ou des services. Les règles SSH et Wazuh sont exclues. Continuer ?')) void launch('openscap-remediate.yml', 'Remédiation', openscapExtraVars)
           }}>2. Remédier</button>
-          <button className="secondary" onClick={() => void launch('compliance-verify.yml', 'Re-contrôle', openscapExtraVars)}>3. Re-contrôler</button>
+          <button className="secondary" disabled={actionBusy} onClick={() => void launch('compliance-verify.yml', 'Re-contrôle', openscapExtraVars)}>3. Re-contrôler</button>
         </div>
         {currentPosture?.compliance && <div className="detail-grid">
           <div><span>Profil</span><strong>{currentPosture.compliance.profile}</strong></div>
@@ -1253,14 +1350,14 @@ function HostDetail() {
           <div><span>Exposition noyau</span><strong>{currentPosture?.livepatch?.exposure_days ?? '—'} jour(s)</strong></div>
         </div>
         <div className="form-actions">
-          <button className="secondary" onClick={() => void launch('livepatch-check.yml', 'Livepatch')}>Vérifier le livepatch</button>
-          <button className="secondary" disabled={!patchExtraVars.patch_targets || patchExtraVars.patch_targets === '[]'} onClick={() => void launch('patch-security.yml', 'Correctifs', patchExtraVars)}>Appliquer les correctifs ciblés</button>
-          <button className="secondary" disabled={!patchExtraVars.patch_targets || patchExtraVars.patch_targets === '[]'} onClick={() => void launch('patch-verify.yml', 'Vérification correctifs', patchExtraVars)}>Vérifier les correctifs</button>
+          <button className="secondary" disabled={actionBusy} onClick={() => void launch('livepatch-check.yml', 'Livepatch')}>Vérifier le livepatch</button>
+          <button className="secondary" disabled={actionBusy || !patchExtraVars.patch_targets || patchExtraVars.patch_targets === '[]'} onClick={() => void launch('patch-security.yml', 'Correctifs', patchExtraVars)}>Appliquer les correctifs ciblés</button>
+          <button className="secondary" disabled={actionBusy || !patchExtraVars.patch_targets || patchExtraVars.patch_targets === '[]'} onClick={() => void launch('patch-verify.yml', 'Vérification correctifs', patchExtraVars)}>Vérifier les correctifs</button>
         </div>
         {pendingFindings.length > 0 && <DataTable headers={['Paquet', 'CVE', 'Sévérité', 'Redémarrage']} rows={pendingFindings.slice(0, 20).map((finding) => [<strong key={finding.id}>{finding.package}</strong>, <span className="mono" key={`cve-${finding.id}`}>{finding.cve}</span>, <StatusBadge key={`sev-${finding.id}`} value={finding.severity} />, <span key={`reboot-${finding.id}`}>{finding.reboot_required ? 'Oui' : 'Non'}</span>])} />}
       </article>
 
-      {Object.entries(actionStates).map(([key, value]) => <div className="task-progress" key={key}><span className="spinner" />{key} — {value}</div>)}
+      <TaskFeedback task={actionTask} />
     </div>
   )
 }
@@ -1282,6 +1379,7 @@ function Deployments() {
   const [checkMode, setCheckMode] = useState(false)
   const [filter, setFilter] = useState<'all' | 'active' | 'finished'>('all')
   const [offset, setOffset] = useState(0)
+  const [createOpen, setCreateOpen] = useState(false)
   const statusParam = filter === 'active' ? 'queued,running' : filter === 'finished' ? 'succeeded,failed,cancelled' : undefined
   const deployments = useQuery({
     queryKey: ['deployments', 'list', { filter, offset }],
@@ -1323,11 +1421,15 @@ function Deployments() {
   const goToPage = (next: number) => setOffset(Math.max(0, Math.min(next - 1, pageCount - 1)) * DEPLOYMENT_PAGE_SIZE)
   return (
     <div className="page">
-      <PageHeader eyebrow="Automatisation" title="Déploiements" description={`${formatNumber(total)} exécution(s) · ${formatNumber(statusTotals.data?.active ?? 0)} en cours · ${formatNumber(statusTotals.data?.succeeded ?? 0)} réussie(s) · ${formatNumber(statusTotals.data?.failed ?? 0)} échouée(s)`} />
+      <PageHeader
+        eyebrow="Automatisation"
+        title="Déploiements"
+        description={`${formatNumber(total)} exécution(s) · ${formatNumber(statusTotals.data?.active ?? 0)} en cours · ${formatNumber(statusTotals.data?.succeeded ?? 0)} réussie(s) · ${formatNumber(statusTotals.data?.failed ?? 0)} échouée(s)`}
+        actions={canOperate && <button className="primary" onClick={() => setCreateOpen(true)}><Plus /> Nouvelle exécution</button>}
+      />
       {(deployments.isError || hosts.isError) && <div className="alert error">Impossible de charger les déploiements ou les hôtes cibles. Vérifiez la session puis réessayez.</div>}
-      {canOperate && (
-        <article className="panel form-panel">
-          <div className="panel-heading"><div><p className="eyebrow">Nouvelle exécution</p><h2>Lancer un playbook</h2></div></div>
+      {canOperate && createOpen && (
+        <Modal eyebrow="Nouvelle exécution" title="Lancer un playbook" onClose={() => setCreateOpen(false)}>
           <div className="form-grid">
             <label>Environnement<select value={environment} onChange={(event) => { setEnvironment(event.target.value); setTargetHosts([]) }}><option value="">Sélectionner</option>{environments.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
             <label>Playbook<select value={selectedPlaybook} onChange={(event) => setSelectedPlaybook(event.target.value)}><option value="">Sélectionner</option>{allowedPlaybooks.map((item) => <option key={item.filename} value={item.filename}>{item.filename}</option>)}</select></label>
@@ -1336,7 +1438,7 @@ function Deployments() {
           </div>
           {create.isError && <div className="alert error">{create.error instanceof Error ? create.error.message : 'Création du déploiement impossible.'}</div>}
           <div className="form-actions"><button className="primary" disabled={create.isPending || !environment || !selectedPlaybook || targetHosts.length === 0} onClick={() => create.mutate()}>{create.isPending ? 'Mise en file…' : checkMode ? 'Prévisualiser' : 'Lancer'}</button></div>
-        </article>
+        </Modal>
       )}
       {(cancel.isError || retry.isError) && <div className="alert error">{cancel.isError ? (cancel.error instanceof Error ? cancel.error.message : 'Annulation impossible.') : (retry.error instanceof Error ? retry.error.message : 'Relance impossible.')}</div>}
       <article className="panel">
@@ -1447,11 +1549,15 @@ function Compliance() {
   const navigate = useNavigate()
   const [hostName, setHostName] = useState('')
   const [profile, setProfile] = useState('')
+  const [scanOpen, setScanOpen] = useState(false)
   const [launchError, setLaunchError] = useState('')
-  const [stepMessage, setStepMessage] = useState('')
+  const [stepTask, setStepTask] = useState<TaskFeedbackState | null>(null)
+  const [stepBusy, setStepBusy] = useState(false)
   const launchStep = async (playbook: string, label: string) => {
+    if (stepBusy) return
     if (label === 'Remédier' && !window.confirm('La remédiation peut impacter SSH, le pare-feu et des services. Les règles SSH et les ports Wazuh 1514/1515 sont exclus. Continuer ?')) return
-    setStepMessage(`${label} : lancement…`)
+    setStepBusy(true)
+    setStepTask({ label, state: 'pending', message: 'Mise en file…' })
     try {
       const deployment = await api.createDeployment({
         environment: (hosts.data ?? []).find((host) => host.name === hostName)?.environment ?? '',
@@ -1459,22 +1565,26 @@ function Compliance() {
         hosts: [hostName],
         extra_vars: profile ? { openscap_profile: profile } : {},
       })
-      setStepMessage(`${label} : tâche ${deployment.id} en file`)
+      setStepTask({ label, id: deployment.id, state: 'queued', message: `Tâche ${deployment.id} en file` })
       void client.invalidateQueries({ queryKey: ['deployments'] })
-      void refreshAfterDeployment(client, deployment.id, [
+      const job = await refreshAfterDeployment(client, deployment.id, [
         ['compliance'],
         ['compliance-summary'],
         ['kpis'],
         ['deployments'],
       ])
+      setStepTask(taskFromDeployment(label, job, deployment.id))
     } catch (cause) {
-      setStepMessage(`${label} : ${cause instanceof Error ? cause.message : 'échec'}`)
+      setStepTask({ label, state: 'error', message: cause instanceof Error ? cause.message : 'Échec' })
+    } finally {
+      setStepBusy(false)
     }
   }
   const launch = useMutation({
     mutationFn: () => api.createDeployment({ environment: (hosts.data ?? []).find((host) => host.name === hostName)?.environment ?? '', playbook: 'openscap-scan.yml', hosts: [hostName], extra_vars: profile ? { openscap_profile: profile } : {} }),
     onSuccess: (deployment) => {
       setLaunchError('')
+      setScanOpen(false)
       void client.invalidateQueries({ queryKey: ['deployments'] })
       void refreshAfterDeployment(client, deployment.id, [
         ['compliance'],
@@ -1499,6 +1609,7 @@ function Compliance() {
           <>
             <button className="secondary" onClick={() => void api.exportCompliance('csv')}>Exporter CSV</button>
             <button className="secondary" onClick={() => void api.exportCompliance('json')}>Exporter JSON</button>
+            <button className="primary" onClick={() => setScanOpen(true)}><Plus /> Nouveau scan</button>
           </>
         )}
       />
@@ -1507,8 +1618,13 @@ function Compliance() {
         <StatCard label="Score moyen" item={{ value: summary.data?.average_score ?? null, status: summary.data?.average_score != null ? 'ok' : 'unknown' }} icon={Gauge} tone="success" suffix="%" />
         <StatCard label="Hôte le plus faible" item={{ value: worst?.score ?? null, status: worst ? 'ok' : 'unknown' }} icon={TriangleAlert} tone="warning" suffix="%" hint={worst?.host} />
       </section>
-      <article className="panel form-panel">
-        <div className="panel-heading"><div><p className="eyebrow">Nouveau scan</p><h2>Lancer OpenSCAP</h2></div></div>
+      {scanOpen && (
+        <Modal
+          eyebrow="Nouveau scan"
+          title="Lancer OpenSCAP"
+          description="Audit, remédiation puis re-contrôle : suivez chaque étape depuis le déploiement correspondant."
+          onClose={() => setScanOpen(false)}
+        >
         <div className="form-grid three">
           <label>Hôte<select value={hostName} onChange={(event) => setHostName(event.target.value)}><option value="">Sélectionner</option>{(hosts.data ?? []).map((host) => <option key={host.id} value={host.name}>{host.name}</option>)}</select></label>
           <label>Profil<select value={profile} onChange={(event) => setProfile(event.target.value)}><option value="">Défaut du playbook</option>{(profiles.data ?? []).map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
@@ -1516,12 +1632,13 @@ function Compliance() {
         </div>
         <p className="host-import-note">Rapports avant/après sous <code>/var/log/linsec360/</code>. La remédiation exclut les règles SSH et les ports Wazuh 1514/1515.</p>
         <div className="form-actions">
-          <button className="danger" disabled={!hostName} onClick={() => void launchStep('openscap-remediate.yml', 'Remédier')}>2. Remédier</button>
-          <button className="secondary" disabled={!hostName} onClick={() => void launchStep('compliance-verify.yml', 'Re-contrôle')}>3. Re-contrôler</button>
+          <button className="danger" disabled={!hostName || stepBusy} onClick={() => void launchStep('openscap-remediate.yml', 'Remédier')}>2. Remédier</button>
+          <button className="secondary" disabled={!hostName || stepBusy} onClick={() => void launchStep('compliance-verify.yml', 'Re-contrôle')}>3. Re-contrôler</button>
         </div>
-        {stepMessage && <p className="host-import-note">{stepMessage}</p>}
+        <TaskFeedback task={stepTask} />
         {launchError && <div className="alert error">{launchError}</div>}
-      </article>
+        </Modal>
+      )}
       <article className="panel">
         <div className="panel-heading"><div><p className="eyebrow">Résultats</p><h2>Scans récents</h2></div><span className="badge muted">{data.length}</span></div>
         <DataTable
@@ -1551,7 +1668,9 @@ function Patching() {
   const kpis = useQuery({ queryKey: ['kpis'], queryFn: api.kpis, refetchInterval: 30_000 })
   const [hostName, setHostName] = useState('')
   const [selectedFindingIds, setSelectedFindingIds] = useState<number[]>([])
-  const [patchMessage, setPatchMessage] = useState('')
+  const [showActions, setShowActions] = useState(false)
+  const [patchBusy, setPatchBusy] = useState(false)
+  const [patchTask, setPatchTask] = useState<TaskFeedbackState | null>(null)
   const refreshQueries = () => Promise.all([
     client.invalidateQueries({ queryKey: ['patch-findings'] }),
     client.invalidateQueries({ queryKey: ['kpis'] }),
@@ -1560,20 +1679,25 @@ function Patching() {
   const syncWazuh = useMutation({ mutationFn: api.syncWazuhPatches, onSuccess: () => void refreshQueries() })
   const resolve = useMutation({ mutationFn: api.resolvePatch, onSuccess: () => void refreshQueries() })
   const patchAction = async (playbook: string, label: string, extraVars: Record<string, string> = {}) => {
+    if (patchBusy) return
     const target = (hosts.data ?? []).find((host) => host.name === hostName)
     if (!target) return
-    setPatchMessage(`${label} : lancement…`)
+    setPatchBusy(true)
+    setPatchTask({ label, state: 'pending', message: 'Mise en file…' })
     try {
       const deployment = await api.createDeployment({ environment: target.environment, playbook, hosts: [target.name], extra_vars: extraVars })
-      setPatchMessage(`${label} : tâche ${deployment.id} en file`)
+      setPatchTask({ label, id: deployment.id, state: 'queued', message: `Tâche ${deployment.id} en file` })
       void client.invalidateQueries({ queryKey: ['deployments'] })
-      void refreshAfterDeployment(client, deployment.id, [
+      const job = await refreshAfterDeployment(client, deployment.id, [
         ['patch-findings'],
         ['kpis'],
         ['deployments'],
       ])
+      setPatchTask(taskFromDeployment(label, job, deployment.id))
     } catch (cause) {
-      setPatchMessage(`${label} : ${cause instanceof Error ? cause.message : 'échec'}`)
+      setPatchTask({ label, state: 'error', message: cause instanceof Error ? cause.message : 'Échec' })
+    } finally {
+      setPatchBusy(false)
     }
   }
   if (isLoading) return <Loading label="Chargement des correctifs…" />
@@ -1593,7 +1717,12 @@ function Patching() {
         eyebrow="Patching"
         title="Correctifs"
         description="Vulnérabilités Wazuh et état du live patching noyau."
-        actions={<button className="secondary" disabled={syncWazuh.isPending} onClick={() => syncWazuh.mutate()}><RefreshCw /> Synchroniser Wazuh</button>}
+        actions={(
+          <>
+            <button className="secondary" disabled={syncWazuh.isPending} onClick={() => syncWazuh.mutate()}><RefreshCw /> Synchroniser Wazuh</button>
+            <button className="primary" onClick={() => setShowActions(true)}><Play /> Actions correctifs</button>
+          </>
+        )}
       />
       {syncWazuh.isError && <div className="alert error">{syncWazuh.error instanceof Error ? syncWazuh.error.message : 'Synchronisation Wazuh impossible.'}</div>}
       <section className="metrics-grid">
@@ -1605,18 +1734,45 @@ function Patching() {
       </section>
       <article className="panel">
         <div className="panel-heading"><div><p className="eyebrow">Patching natif</p><h2>Livepatch & correctifs ciblés</h2></div><StatusBadge value={reboots ? 'warning' : 'success'} label={reboots ? `${formatNumber(reboots)} redémarrage(s) requis` : 'Aucun redémarrage requis'} /></div>
-        <div className="form-grid three">
-          <label>Hôte<select value={hostName} onChange={(event) => { setHostName(event.target.value); setSelectedFindingIds([]) }}><option value="">Sélectionner</option>{(hosts.data ?? []).map((host) => <option key={host.id} value={host.name}>{host.name}</option>)}</select></label>
-          <div className="detail-card"><p className="eyebrow">Exposition noyau</p><strong>{kpis.data?.kernel_exposure_days.value ?? '—'} jour(s)</strong></div>
-          <div className="form-spacer"><button className="secondary" disabled={!hostName} onClick={() => void patchAction('livepatch-check.yml', 'Vérifier le livepatch')}>Vérifier le livepatch</button></div>
-        </div>
-        <p className="host-import-note">Sélectionnez les correctifs à traiter dans le tableau ci-dessous. Sans sélection, tous les correctifs en attente de l’hôte sont ciblés. Le redémarrage reste manuel.</p>
+        <p className="host-import-note">Exposition noyau : {kpis.data?.kernel_exposure_days.value ?? '—'} jour(s). Trois actions distinctes : vérifier l’état du livepatch, appliquer les correctifs paquet, puis re-contrôler qu’ils sont installés. Le redémarrage reste manuel.</p>
         <div className="form-actions">
-          <button className="secondary" disabled={!hostName || !selectedFindings.length} onClick={() => void patchAction('patch-security.yml', 'Appliquer les correctifs', patchExtraVars)}>Appliquer les correctifs ciblés</button>
-          <button className="secondary" disabled={!hostName || !selectedFindings.length} onClick={() => void patchAction('patch-verify.yml', 'Vérification correctifs', patchExtraVars)}>Vérifier les correctifs</button>
+          <button className="secondary" onClick={() => setShowActions(true)}>Ouvrir les actions correctifs</button>
         </div>
-        {patchMessage && <p className="host-import-note">{patchMessage}</p>}
+        <TaskFeedback task={patchTask} />
       </article>
+      {showActions && (
+        <Modal
+          eyebrow="Patching natif"
+          title="Actions correctifs"
+          description="Chaque action crée un déploiement Ansible traçable : vous pouvez suivre sa progression et consulter son journal."
+          onClose={() => setShowActions(false)}
+        >
+          <div className="form-grid three">
+            <label>Hôte<select value={hostName} onChange={(event) => { setHostName(event.target.value); setSelectedFindingIds([]) }}><option value="">Sélectionner</option>{(hosts.data ?? []).map((host) => <option key={host.id} value={host.name}>{host.name}</option>)}</select></label>
+            <div className="detail-card"><p className="eyebrow">Exposition noyau</p><strong>{kpis.data?.kernel_exposure_days.value ?? '—'} jour(s)</strong></div>
+            <div className="form-spacer"><StatusBadge value={reboots ? 'warning' : 'success'} label={reboots ? `${formatNumber(reboots)} redémarrage(s) requis` : 'Aucun redémarrage requis'} /></div>
+          </div>
+          <p className="host-import-note">Sélectionnez les correctifs à traiter dans le tableau ci-dessous. Sans sélection, tous les correctifs en attente de l’hôte sont ciblés.</p>
+          <div className="patch-actions">
+            <div className="patch-action-card">
+              <strong>Vérifier le livepatch</strong>
+              <p>Vérification en lecture seule de l’état du livepatch du noyau. Cette action n’applique aucun correctif paquet et ne remplace pas la vérification des correctifs.</p>
+              <button className="secondary" disabled={!hostName || patchBusy} onClick={() => void patchAction('livepatch-check.yml', 'Vérifier le livepatch')}>Vérifier le livepatch</button>
+            </div>
+            <div className="patch-action-card">
+              <strong>Appliquer les correctifs ciblés</strong>
+              <p>Installe les paquets correctifs (playbook <code>patch-security.yml</code>) pour les paquets et CVE sélectionnés.</p>
+              <button className="primary" disabled={!hostName || !selectedFindings.length || patchBusy} onClick={() => void patchAction('patch-security.yml', 'Appliquer les correctifs', patchExtraVars)}>Appliquer les correctifs ciblés</button>
+            </div>
+            <div className="patch-action-card">
+              <strong>Vérifier les correctifs</strong>
+              <p>Re-contrôle après application (playbook <code>patch-verify.yml</code>) : compare la version installée à la version corrigée attendue.</p>
+              <button className="secondary" disabled={!hostName || !selectedFindings.length || patchBusy} onClick={() => void patchAction('patch-verify.yml', 'Vérifier les correctifs', patchExtraVars)}>Vérifier les correctifs</button>
+            </div>
+          </div>
+          <TaskFeedback task={patchTask} />
+        </Modal>
+      )}
       <article className="panel">
         <div className="panel-heading"><div><p className="eyebrow">Vulnérabilités</p><h2>Correctifs détectés</h2></div><span className="badge muted">{data.length}</span></div>
         <DataTable
@@ -1865,23 +2021,32 @@ function Playbooks() {
         )}
       />
       {remove.isError && <div className="alert error">{remove.error instanceof Error ? remove.error.message : 'Suppression du playbook impossible.'}</div>}
-      <article className="panel playbook-library">
-        <div className="panel-heading"><div><p className="eyebrow">Bibliothèque</p><h2>Sélectionner un playbook</h2></div></div>
-        <div className="playbook-list">
-          {!list.data?.length && <span className="empty">Aucun playbook enregistré</span>}
-          {(list.data ?? []).map((item) => (
-            <button key={item.filename} className={`playbook-choice ${selected === item.filename && !creating ? 'selected' : ''}`} onClick={() => selectPlaybook(item.filename)}>
-              <strong>{item.filename}</strong>
-              <small>{item.description || 'Aucune description'}</small>
-              <span className="badge muted" style={{ alignSelf: 'flex-start', marginTop: 4 }}>{item.is_allowlisted ? 'Autorisé' : 'Non autorisé'}</span>
-            </button>
-          ))}
+      <div className="playbook-workspace">
+        <article className="panel playbook-library">
+          <div className="panel-heading"><div><p className="eyebrow">Bibliothèque</p><h2>Sélectionner un playbook</h2></div></div>
+          <div className="playbook-list">
+            {!list.data?.length && <span className="empty">Aucun playbook enregistré</span>}
+            {(list.data ?? []).map((item) => (
+              <button key={item.filename} className={`playbook-choice ${selected === item.filename && !creating ? 'selected' : ''}`} onClick={() => selectPlaybook(item.filename)}>
+                <strong>{item.filename}</strong>
+                <small>{item.description || 'Aucune description'}</small>
+                <span className="badge muted" style={{ alignSelf: 'flex-start', marginTop: 4 }}>{item.is_allowlisted ? 'Autorisé' : 'Non autorisé'}</span>
+              </button>
+            ))}
+          </div>
+        </article>
+        <div className="playbook-editor-area">
+          {creating && <PlaybookEditor key="new-playbook" creating selected="" canEdit={canEdit} onSaved={(saved) => { setCreating(false); setSelected(saved.filename) }} />}
+          {!creating && selected && detail.isLoading && <Loading label="Chargement du playbook…" />}
+          {!creating && selected && detail.isError && <div className="alert error">Impossible de charger ce playbook.</div>}
+          {!creating && detail.data && <PlaybookEditor key={selected} creating={false} selected={selected} playbook={detail.data} canEdit={canEdit} onSaved={(saved) => { setSelected(saved.filename) }} />}
+          {!creating && !selected && (
+            <article className="panel">
+              <EmptyState icon={FileCode2} title="Sélectionnez un playbook" description="L’éditeur s’ouvre à droite de la liste, sans défilement." />
+            </article>
+          )}
         </div>
-      </article>
-      {creating && <PlaybookEditor key="new-playbook" creating selected="" canEdit={canEdit} onSaved={(saved) => { setCreating(false); setSelected(saved.filename) }} />}
-      {!creating && selected && detail.isLoading && <Loading label="Chargement du playbook…" />}
-      {!creating && selected && detail.isError && <div className="alert error">Impossible de charger ce playbook.</div>}
-      {!creating && detail.data && <PlaybookEditor key={selected} creating={false} selected={selected} playbook={detail.data} canEdit={canEdit} onSaved={(saved) => { setSelected(saved.filename) }} />}
+      </div>
     </div>
   )
 }
@@ -2204,21 +2369,49 @@ function Shell({ onLogout }: { onLogout: () => void }) {
   const me = useQuery({ queryKey: ['me'], queryFn: api.me, retry: false })
   const location = useLocation()
   const label = currentNavLabel(location.pathname)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === 'true'
+    } catch {
+      return false
+    }
+  })
   useEffect(() => { window.scrollTo(0, 0) }, [location.pathname])
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SIDEBAR_STORAGE_KEY, String(sidebarCollapsed))
+    } catch {
+      // Navigation state is cosmetic; a locked-down browser can still use it.
+    }
+  }, [sidebarCollapsed])
   const role = me.data?.role ? me.data.role.charAt(0).toUpperCase() + me.data.role.slice(1) : 'Session'
+  const toggleLabel = sidebarCollapsed ? 'Déplier la navigation' : 'Replier la navigation'
   return (
-    <div className="app">
+    <div className="app" data-sidebar={sidebarCollapsed ? 'collapsed' : 'expanded'}>
       <aside className="sidebar">
-        <NavLink to="/" className="brand">
-          <span className="brand-mark"><ShieldCheck /></span>
-          <span className="brand-text"><strong>LinSec<em>360</em></strong><span>Security operations</span></span>
-        </NavLink>
-        <nav>
+        <div className="sidebar-top">
+          <NavLink to="/" className="brand" title={sidebarCollapsed ? 'Vue d’ensemble' : undefined}>
+            <span className="brand-mark"><ShieldCheck /></span>
+            <span className="brand-text"><strong>LinSec<em>360</em></strong><span>Security operations</span></span>
+          </NavLink>
+          <button
+            className="sidebar-collapse"
+            type="button"
+            aria-expanded={!sidebarCollapsed}
+            aria-controls="main-nav"
+            aria-label={toggleLabel}
+            title={toggleLabel}
+            onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
+          >
+            {sidebarCollapsed ? <ChevronRight /> : <ChevronLeft />}
+          </button>
+        </div>
+        <nav id="main-nav">
           {navGroups.map((group) => (
             <div className="nav-group" key={group.label}>
               <div className="nav-label">{group.label}</div>
               {group.items.map(({ to, label: itemLabel, icon: Icon }) => (
-                <NavLink key={to} to={to} end={to === '/'}>
+                <NavLink key={to} to={to} end={to === '/'} title={sidebarCollapsed ? itemLabel : undefined}>
                   <Icon /><span>{itemLabel}</span><ChevronRight className="chevron" />
                 </NavLink>
               ))}
@@ -2227,7 +2420,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
         </nav>
         <div className="sidebar-footer">
           <div className="sidebar-status"><span className="live-dot success" /><span>Console SOC <strong>active</strong></span></div>
-          <button className="logout" onClick={onLogout}><LogOut /><span>Déconnexion</span></button>
+          <button className="logout" title={sidebarCollapsed ? 'Déconnexion' : undefined} onClick={onLogout}><LogOut /><span>Déconnexion</span></button>
         </div>
       </aside>
       <main className="main">

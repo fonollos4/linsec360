@@ -69,6 +69,7 @@ export interface Host {
   ansible_port: number
   ssh_key_reference: string
   ansible_password_configured: boolean
+  credential_status: 'not_configured' | 'ok' | 'undecryptable'
   groups: string[]
   os: string | null
   ssh_status: string

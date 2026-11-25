@@ -184,6 +184,7 @@ class HostOut(ORMModel):
     ansible_port: int = 22
     ssh_key_reference: str = "linsec-ansible"
     ansible_password_configured: bool = False
+    credential_status: str = "not_configured"
     ssh_status: str = "pending"
     ssh_fingerprint: str | None = None
     ssh_error: str | None = None

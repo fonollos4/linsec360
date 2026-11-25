@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import os
 import sys
 
 from . import models
 from .config import get_settings
 from .db import create_all, session_scope
+from .errors import IntegrationUnavailable
 from .security import hash_password
-from .services import playbook_service
+from .services import credential_service, playbook_service
 
 
 def _create_admin(args: argparse.Namespace) -> int:
@@ -84,6 +86,60 @@ def _reset_password(args: argparse.Namespace) -> int:
     return 0
 
 
+def _reencrypt_credentials(args: argparse.Namespace) -> int:
+    """Re-encrypt stored host passwords with the current encryption key."""
+    old_key = args.old_key or os.environ.get(
+        "LINSEC_OLD_CREDENTIAL_ENCRYPTION_KEY"
+    )
+    if not old_key:
+        old_key = getpass.getpass("Previous credential encryption key: ")
+
+    migrated: list[str] = []
+    already_current: list[str] = []
+    unreadable: list[str] = []
+    with session_scope() as db:
+        hosts = (
+            db.query(models.Host)
+            .filter(models.Host.ansible_password_encrypted.isnot(None))
+            .all()
+        )
+        for host in hosts:
+            blob = host.ansible_password_encrypted
+            assert blob is not None
+            try:
+                credential_service.decrypt_password(blob)
+            except IntegrationUnavailable:
+                pass
+            else:
+                already_current.append(host.name)
+                continue
+            try:
+                plaintext = credential_service.decrypt_password_with_key(blob, old_key)
+            except IntegrationUnavailable:
+                unreadable.append(host.name)
+                continue
+            if args.apply:
+                host.ansible_password_encrypted = credential_service.encrypt_password(
+                    plaintext
+                )
+            migrated.append(host.name)
+
+    mode = "APPLY" if args.apply else "DRY RUN"
+    print(f"{mode}: {len(migrated)} credential(s) can be re-encrypted")
+    if migrated:
+        print("  hosts: " + ", ".join(migrated))
+    if already_current:
+        print(f"  already using the current key: {len(already_current)}")
+    if unreadable:
+        print(
+            "  unreadable with the supplied key (left unchanged): "
+            + ", ".join(unreadable)
+        )
+    if not args.apply and migrated:
+        print("Re-run with --apply to persist the migration")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m backend.cli")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -109,6 +165,18 @@ def build_parser() -> argparse.ArgumentParser:
     reset.add_argument("--username", required=True)
     reset.add_argument("--password")
     reset.set_defaults(func=_reset_password)
+
+    reencrypt = subparsers.add_parser("reencrypt-credentials")
+    reencrypt.add_argument(
+        "--old-key",
+        help="Previous Fernet key; defaults to LINSEC_OLD_CREDENTIAL_ENCRYPTION_KEY",
+    )
+    reencrypt.add_argument(
+        "--apply",
+        action="store_true",
+        help="Persist the migration (otherwise only report what would change)",
+    )
+    reencrypt.set_defaults(func=_reencrypt_credentials)
 
     return parser
 
