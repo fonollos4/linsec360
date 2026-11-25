@@ -1,6 +1,34 @@
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
+from backend.config import get_settings
+from backend.db import session_scope
+from backend.services import playbook_service
+
 from .conftest import create_playbook
+
+SUPPORTED_PLAYBOOKS = {
+    "site.yml",
+    "verify.yml",
+    "openscap-scan.yml",
+    "openscap-remediate.yml",
+    "compliance-verify.yml",
+    "hardening.yml",
+    "patch-security.yml",
+    "patch-verify.yml",
+    "livepatch-check.yml",
+    "wazuh-agent.yml",
+    "connectivity.yml",
+}
+
+REMOVED_PLAYBOOKS = {
+    "site-legacy.yml",
+    "system-audit.yml",
+    "hardening-audit.yml",
+    "system-update.yml",
+    "disk-cleanup.yml",
+}
 
 
 def test_bundled_playbooks_are_seeded(client: TestClient, login):
@@ -8,9 +36,36 @@ def test_bundled_playbooks_are_seeded(client: TestClient, login):
     response = client.get("/api/v1/playbooks")
     assert response.status_code == 200
     filenames = {item["filename"] for item in response.json()}
-    assert "connectivity.yml" in filenames
-    assert "system-audit.yml" in filenames
+    assert filenames >= SUPPORTED_PLAYBOOKS
+    assert not filenames & REMOVED_PLAYBOOKS
     assert "ansible.cfg" not in filenames
+
+
+def test_bundled_playbook_sync_removes_deleted_files_and_keeps_user_playbooks(
+    client: TestClient, csrf_headers, monkeypatch, tmp_path: Path
+):
+    headers = csrf_headers()
+    assert create_playbook(client, headers).status_code == 201
+
+    directory = tmp_path / "playbooks"
+    directory.mkdir()
+    stale = directory / "stale-bundled.yml"
+    stale.write_text("- name: Stale\n  hosts: all\n  tasks: []\n", encoding="utf-8")
+
+    monkeypatch.setattr(get_settings(), "bundled_playbooks_dir", directory)
+    with session_scope() as db:
+        playbook_service.seed_from_directory(db, directory)
+
+    with session_scope() as db:
+        assert playbook_service.get_by_filename(db, "stale-bundled.yml") is not None
+
+    stale.unlink()
+    with session_scope() as db:
+        playbook_service.seed_from_directory(db, directory)
+
+    with session_scope() as db:
+        assert playbook_service.get_by_filename(db, "stale-bundled.yml") is None
+        assert playbook_service.get_by_filename(db, "custom.yml") is not None
 
 
 def test_playbook_crud(client: TestClient, csrf_headers):

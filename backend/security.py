@@ -168,6 +168,11 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def hash_api_token(token: str) -> str:
+    """Hash an automation token using the same format as stored API tokens."""
+    return _hash_token(token)
+
+
 def create_api_token(
     db: Session,
     *,
@@ -212,6 +217,56 @@ def authenticate_api_token(db: Session, token: str) -> models.User | None:
 
 def revoke_api_token(db: Session, token: models.ApiToken) -> None:
     token.revoked_at = datetime.now(UTC)
+    db.commit()
+
+
+def provision_api_token(
+    db: Session,
+    *,
+    plaintext: str,
+    name: str,
+    username: str,
+    role: str = "operator",
+) -> None:
+    """Create or restore a stable automation token from a secret env value."""
+    if not plaintext.startswith("linsec_"):
+        raise ValueError("automation token must start with 'linsec_'")
+    user = (
+        db.query(models.User)
+        .filter(models.User.username == username)
+        .one_or_none()
+    )
+    if user is None:
+        user = models.User(
+            username=username,
+            password_hash=hash_password(secrets.token_urlsafe(48)),
+            role=role,
+            is_active=True,
+        )
+        db.add(user)
+        db.flush()
+    else:
+        user.is_active = True
+
+    token_hash = hash_api_token(plaintext)
+    record = (
+        db.query(models.ApiToken)
+        .filter(models.ApiToken.token_hash == token_hash)
+        .one_or_none()
+    )
+    if record is None:
+        db.add(
+            models.ApiToken(
+                name=name,
+                token_hash=token_hash,
+                role=role,
+                created_by_id=user.id,
+            )
+        )
+    else:
+        record.revoked_at = None
+        record.created_by_id = user.id
+        record.role = role
     db.commit()
 
 

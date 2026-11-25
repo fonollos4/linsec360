@@ -222,3 +222,64 @@ def test_compose_and_env_template_no_longer_deploy_uyuni():
     pattern = re.compile(r"(?i)uyuni|salt-minion|spacewalk", re.MULTILINE)
     assert pattern.search(compose) is None
     assert pattern.search(example) is None
+
+
+def test_bundled_playbook_directory_matches_supported_workflow():
+    filenames = {path.name for path in (TASKENGINE / "playbooks").glob("*.yml")}
+    for expected in (
+        "site.yml",
+        "verify.yml",
+        "openscap-scan.yml",
+        "openscap-remediate.yml",
+        "compliance-verify.yml",
+        "hardening.yml",
+        "patch-security.yml",
+        "patch-verify.yml",
+        "livepatch-check.yml",
+        "wazuh-agent.yml",
+        "connectivity.yml",
+    ):
+        assert expected in filenames
+    for removed in (
+        "site-legacy.yml",
+        "system-audit.yml",
+        "hardening-audit.yml",
+        "system-update.yml",
+        "disk-cleanup.yml",
+    ):
+        assert removed not in filenames
+
+
+def test_compliance_and_patch_playbooks_ingest_their_results():
+    for filename, endpoint in (
+        ("openscap-scan.yml", "/api/v1/compliance/scans"),
+        ("openscap-remediate.yml", "/api/v1/compliance/scans"),
+        ("compliance-verify.yml", "/api/v1/compliance/scans"),
+        ("patch-security.yml", "/api/v1/patching/results"),
+        ("patch-verify.yml", "/api/v1/patching/results"),
+    ):
+        content = _read(TASKENGINE / "playbooks" / filename)
+        assert endpoint in content
+        assert "Authorization: \"Bearer {{" in content
+        assert "no_log: true" in content
+
+        plays = yaml.safe_load(content)
+        tasks = [task for play in plays for task in play.get("tasks", [])]
+        ingest_tasks = [
+            task for task in _all_tasks(tasks) if "ansible.builtin.uri" in task
+        ]
+        assert ingest_tasks
+        assert all("failed_when" not in task for task in ingest_tasks)
+
+
+def test_patch_playbooks_support_targeted_and_verified_packages():
+    for filename in ("patch-security.yml", "patch-verify.yml"):
+        play = yaml.safe_load(_read(TASKENGINE / "playbooks" / filename))[0]
+        assert play["hosts"] == "all"
+        assert "patch_target_packages" in play["vars"]
+        assert "patch_target_cves" in play["vars"]
+        assert "patch_ingest_url" in play["vars"]
+        assert "patch_api_token" in play["vars"]
+    security = yaml.safe_load(_read(TASKENGINE / "playbooks" / "patch-security.yml"))[0]
+    names = [task.get("name") for task in _all_tasks(security["tasks"])]
+    assert "Reboot only when required and explicitly allowed" in names

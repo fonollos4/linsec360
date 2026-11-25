@@ -18,8 +18,11 @@ ansible-playbook -i inventories/production/hosts.yml playbooks/verify.yml
 - `playbooks/site.yml` applies the four baseline roles in order.
 - `playbooks/verify.yml` is read-only and fails with an explicit message when a
   required control is missing.
-- `playbooks/site-legacy.yml` preserves the previous default site playbook
-  for existing deployments.
+- `playbooks/openscap-scan.yml`, `playbooks/openscap-remediate.yml` and
+  `playbooks/compliance-verify.yml` implement the compliance workflow.
+- `playbooks/patch-security.yml` and `playbooks/patch-verify.yml` apply and
+  verify targeted native fixes. `playbooks/livepatch-check.yml` reports the
+  kernel live-patch state.
 
 Hosts must belong to `redhat_family` or `debian_family` in
 `inventories/production/hosts.yml` (or in the API-generated inventory).
@@ -31,7 +34,7 @@ Hosts must belong to `redhat_family` or `debian_family` in
 | `cleanup_uyuni` | Stops/disables Salt/Uyuni services, removes client packages, legacy repositories and configuration, then guarantees that SSH is started and enabled. |
 | `hardening_mac` | Enforces SELinux on RedHat-family hosts and AppArmor on Debian-family hosts without disabling critical SSH profiles. |
 | `hardening_openscap` | Audits before/after remediation, filters generated fixes, writes XML/HTML reports and a status log for Wazuh. |
-| `patching_option2` | Configures native security updates, Ubuntu Pro livepatch when a vaulted token is provided, and a Wazuh `full_command` status script. |
+| `patching_option2` | Role name retained for compatibility; configures native security updates, Ubuntu Pro livepatch when a vaulted token is provided, and a Wazuh `full_command` status script. |
 
 Every role is written to be idempotent: a second run must leave stable tasks
 at `changed=0`. No task stops, disables or masks `sshd`/`ssh`.
@@ -58,7 +61,7 @@ Remediation is generated with `oscap xccdf generate fix`, then passed through
 that could disable SSH or interfere with Wazuh ports `1514`/`1515`. Only the
 filtered script is applied.
 
-## Patching Option 2
+## Native patching workflow
 
 - RedHat-family hosts use `dnf-automatic` in security mode with
   `apply_updates = yes` and `dnf-automatic.timer`.

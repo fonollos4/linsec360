@@ -40,8 +40,12 @@ startup, Wazuh user synchronization, and IP-based health checks.
 
 The command is idempotent. On the first run it creates `.env` for production or
 `.env.development` for development from `.env.example`, generates all missing
-secrets, and leaves existing secrets unchanged. It detects the primary server
-IP with `hostname -I`; override it with `--server-ip <IP>` or
+secrets, and leaves existing secrets unchanged. This includes
+`LINSEC_INGEST_API_TOKEN`: Ansible playbooks use it to write OpenSCAP, hardening,
+livepatch and patch results back to the API. Only its SHA-256 hash is stored in
+the database, so back up the plaintext value from the environment file; losing
+it breaks result ingestion until a new token is configured and provisioned. It
+detects the primary server IP with `hostname -I`; override it with `--server-ip <IP>` or
 `LINSEC_SERVER_IP=<IP>`. Every published port is bound to `0.0.0.0`, CORS
 origins include the server IP and hostname, and the API receives
 `LINSEC_WAZUH_MANAGER_ADDRESS=<server IP>` so agents can reach Wazuh.
@@ -111,7 +115,9 @@ cp .env.example .env                 # or .env.development
 chmod 600 .env
 python3 config/scripts/init-wazuh-env.py --env-file .env
 python3 config/scripts/update-env.py --env-file .env \
-  LINSEC_BIND_ADDRESS=0.0.0.0 LINSEC_WAZUH_MANAGER_ADDRESS=<IP>
+  LINSEC_BIND_ADDRESS=0.0.0.0 LINSEC_WAZUH_MANAGER_ADDRESS=<IP> \
+  LINSEC_INGEST_API_URL=http://api:8000 \
+  LINSEC_INGEST_API_TOKEN='linsec_<generated-secret>'
 python3 config/scripts/render-wazuh-config.py \
   --env-file .env --output-dir "$PWD/config/wazuh/generated"
 docker compose -p linsec360 -f docker-compose.v2.yml --env-file .env \
@@ -149,12 +155,27 @@ docker compose -p linsec360 -f docker-compose.v2.yml --env-file .env \
 ```
 
 Replace the project, env file, and inventory with the development values to
-check that stack. Available playbooks include `site.yml` (baseline hardening),
-`verify.yml`, `openscap-scan.yml`, `hardening.yml`, `patch-security.yml`,
-`livepatch-check.yml`, `wazuh-agent.yml`, `connectivity.yml`, and
-`site-legacy.yml` (the preserved pre-baseline playbook). Inventories generated
-from the database are authoritative for deployments; the files under
-`taskengine/inventories/` are examples for local/syntax runs only.
+check that stack. The supported bundled library is:
+
+- `site.yml` — baseline hardening
+- `verify.yml` — baseline verification
+- `openscap-scan.yml` — OpenSCAP baseline scan
+- `openscap-remediate.yml` — filtered OpenSCAP remediation and after-scan ingestion
+- `compliance-verify.yml` — after-scan verification and ingestion
+- `hardening.yml` — hardening controls
+- `patch-security.yml` — targeted native package/CVE patching
+- `patch-verify.yml` — post-patch verification and result ingestion
+- `livepatch-check.yml` — native kernel live-patch state
+- `wazuh-agent.yml` — agent deployment
+- `connectivity.yml` — connectivity check
+
+The obsolete `site-legacy.yml`, `system-audit.yml`, `hardening-audit.yml`,
+`system-update.yml`, and `disk-cleanup.yml` playbooks were removed. On startup,
+the API synchronizes the bundled library from `taskengine/playbooks`: bundled
+rows are refreshed or removed with their source files, while operator-created
+playbooks are preserved. Inventories generated from the database are
+authoritative for deployments; the files under `taskengine/inventories/` are
+examples for local/syntax runs only.
 
 ### Wazuh manager address for agents
 
@@ -163,6 +184,16 @@ The Settings page resolves configured service hostnames to IP addresses from the
 API container and summarizes the Web UI, API, database, Redis, and Wazuh
 Manager/API/Indexer/Dashboard. Recreate the API and worker after changing this
 setting manually.
+
+### Vulnerability source
+
+Wazuh 4.12 no longer exposes `/vulnerability/{agent_id}/inventory` on the
+Manager API. LinSec360 reads state documents from
+`wazuh-states-vulnerabilities-*` through the Wazuh Indexer API, using
+`LINSEC_WAZUH_INDEXER_URL`, `LINSEC_WAZUH_INDEXER_USERNAME`, and
+`LINSEC_WAZUH_INDEXER_PASSWORD` (or their runtime-equivalent settings). The
+previous 404 from `https://wazuh.manager:55000/vulnerability/002/inventory`
+therefore cannot occur with the current integration.
 
 ## Host onboarding and terminal
 
@@ -180,9 +211,16 @@ setting manually.
   openings and closures are written to the audit log. The nginx location in
   `web/snippets/linsec-locations.conf` handles the WebSocket upgrade.
 - Long running deployments are tracked from `/deployments`, its SSE feed, and
-  detailed logs. OpenSCAP remediation excludes SSH-cutting rules and does not
-  open Wazuh ports `1514`/`1515`; before/after reports are written under
-  `/var/log/linsec360/` on the target.
+  detailed logs. The UI refreshes compliance, patch, KPI and host state when a
+  job reaches a terminal status.
+- The Compliance page provides the three-step OpenSCAP flow: scan, remediate,
+  verify. The selected profile is passed to every step. Remediation excludes
+  SSH-cutting rules and does not open Wazuh ports `1514`/`1515`; reports are
+  written under `/var/log/linsec360/` on the target.
+- The Patching page lets the operator select individual findings for a host,
+  apply targeted packages with `patch-security.yml`, then verify with
+  `patch-verify.yml`. Reboots remain manual unless `patch_reboot_allowed=true`
+  is explicitly supplied as an extra variable.
 
 There is no fingerprint approval screen. Legacy fingerprint endpoints remain
 importable for compatibility but are not used by the UI, connection tests, or

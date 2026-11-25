@@ -149,6 +149,23 @@ def normalize_vulnerability(item: dict) -> dict:
     }
 
 
+def normalize_vulnerability_state(source: dict) -> dict:
+    """Normalize a document from ``wazuh-states-vulnerabilities-*``."""
+    package = source.get("package") or {}
+    vulnerability = source.get("vulnerability") or {}
+    return {
+        "package": package.get("name") or "unknown",
+        "current_version": package.get("version"),
+        "fixed_version": vulnerability.get("fixed_version")
+        or package.get("fixed_version"),
+        "cve": vulnerability.get("id") or "",
+        "severity": (vulnerability.get("severity") or "unknown").lower(),
+        # Wazuh 4.12 state documents carry no remediation status; a present
+        # vulnerability document is an open exposure until an operator acts.
+        "status": normalize_vulnerability_status(vulnerability.get("status") or "open"),
+    }
+
+
 class WazuhClient:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
@@ -163,6 +180,17 @@ class WazuhClient:
 
     def _indexer(self, path: str) -> str:
         return f"{self.settings.wazuh_indexer_url.rstrip('/')}/{path.lstrip('/')}"
+
+    def _require_indexer(self) -> None:
+        if not (
+            self.settings.wazuh_indexer_url
+            and self.settings.wazuh_indexer_username
+            and self.settings.wazuh_indexer_password
+        ):
+            raise IntegrationNotConfigured(
+                "Wazuh indexer is not configured; set LINSEC_WAZUH_INDEXER_URL, "
+                "LINSEC_WAZUH_INDEXER_USERNAME and LINSEC_WAZUH_INDEXER_PASSWORD"
+            )
 
     def _require_api(self) -> None:
         if not self.configured:
@@ -231,13 +259,51 @@ class WazuhClient:
         items = (payload.get("data") or {}).get("affected_items") or []
         return [normalize_agent(item) for item in items if item.get("id")]
 
+    def _search_index(self, index: str, query: dict) -> dict:
+        self._require_indexer()
+        try:
+            with httpx.Client(
+                verify=_tls_verify(
+                    self.settings,
+                    self.settings.wazuh_indexer_verify_tls,
+                ),
+                timeout=self.settings.wazuh_timeout_seconds,
+            ) as client:
+                response = client.post(
+                    self._indexer(f"/{index}/_search"),
+                    json=query,
+                    auth=(
+                        self.settings.wazuh_indexer_username,
+                        self.settings.wazuh_indexer_password,
+                    ),
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPError as exc:
+            raise IntegrationUnavailable(
+                f"Wazuh indexer request failed: {exc}"
+            ) from exc
+
     def list_vulnerabilities(self, agent_id: str) -> list[dict]:
-        payload = self._get(
-            f"/vulnerability/{agent_id}/inventory",
-            {"limit": 1000},
+        # Wazuh removed the manager vulnerability API in 4.8. State documents
+        # are indexed by the manager and queried through the Indexer API.
+        index = getattr(
+            self.settings,
+            "wazuh_vulnerability_index",
+            "wazuh-states-vulnerabilities-*",
         )
-        items = (payload.get("data") or {}).get("affected_items") or []
-        return [normalize_vulnerability(item) for item in items]
+        payload = self._search_index(
+            index,
+            {
+                "size": 1000,
+                "query": {"term": {"agent.id": str(agent_id)}},
+            },
+        )
+        hits = (payload.get("hits") or {}).get("hits") or []
+        return [
+            normalize_vulnerability_state(hit.get("_source") or {})
+            for hit in hits
+        ]
 
     def list_sca(self, agent_id: str) -> list[dict]:
         payload = self._get(f"/sca/{agent_id}", {"limit": 1000})

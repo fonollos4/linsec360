@@ -1,4 +1,4 @@
-"""Patch exposure, Uyuni control-plane and kernel live-patch endpoints."""
+"""Native patch exposure, result ingestion and kernel live-patch endpoints."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from .. import models
 from ..db import get_db
-from ..schemas import LivepatchIn, LivepatchOut, PatchFindingOut
+from ..schemas import LivepatchIn, LivepatchOut, PatchFindingOut, PatchResultsIn
 from ..security import get_current_user, require_roles
 from ..services import (
     audit_service,
@@ -75,6 +75,32 @@ def resolve_finding(
     db.commit()
     kpi_service.capture_snapshot(db)
     return PatchFindingOut.model_validate(finding)
+
+
+@router.post("/results", response_model=list[PatchFindingOut], status_code=201)
+def ingest_results(
+    payload: PatchResultsIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(require_roles("admin", "operator")),
+) -> list[PatchFindingOut]:
+    findings = patch_service.ingest_results(
+        db,
+        host_name=payload.host_name,
+        checks=[check.model_dump() for check in payload.checks],
+    )
+    audit_service.record(
+        db,
+        actor=user,
+        action="patch.results.ingest",
+        target_type="host",
+        target_id=payload.host_name,
+        data={"checks": len(payload.checks)},
+        request=request,
+    )
+    db.commit()
+    kpi_service.capture_snapshot(db)
+    return [PatchFindingOut.model_validate(item) for item in findings]
 
 
 @router.post("/wazuh/sync")

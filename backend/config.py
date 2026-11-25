@@ -91,6 +91,13 @@ class Settings(BaseSettings):
     wazuh_ca_bundle: Path | None = None
     wazuh_timeout_seconds: float = 15.0
     wazuh_alert_index: str = "wazuh-alerts-*"
+    wazuh_vulnerability_index: str = "wazuh-states-vulnerabilities-*"
+
+    # Internal callback channel used by Ansible to write scan/patch results
+    # back to the API. The token is provisioned as a hashed API token at
+    # startup and injected by the deployment worker, never by the UI payload.
+    ingest_api_url: str = "http://api:8000"
+    ingest_api_token: SecretStr | None = None
 
     # Dormant Uyuni settings. Kept only so the legacy patching API endpoints
     # remain importable; they are no longer injected into deployments and are
@@ -131,6 +138,10 @@ class Settings(BaseSettings):
         """Role search path, including the vendored Wazuh collection layout."""
         roles = self.taskengine_dir / "roles"
         return [roles, roles / "wazuh"]
+
+    @property
+    def ingest_api_token_value(self) -> str:
+        return self.ingest_api_token.get_secret_value() if self.ingest_api_token else ""
 
     @property
     def wazuh_configured(self) -> bool:

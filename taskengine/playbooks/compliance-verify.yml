@@ -1,0 +1,60 @@
+---
+# Verify and ingest the OpenSCAP after-report produced by remediation.
+- name: Verify OpenSCAP remediation
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    openscap_profile: xccdf_org.ssgproject.content_profile_standard
+    openscap_log_dir: /var/log/linsec360
+    openscap_after_xml: "{{ openscap_log_dir }}/oscap-after.xml"
+    openscap_after_html: "{{ openscap_log_dir }}/oscap-after.html"
+    openscap_ingest_url: ""
+    openscap_api_token: ""
+
+  tasks:
+    - name: Check that the after-scan artifacts exist
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: openscap_after_artifacts
+      loop:
+        - "{{ openscap_after_xml }}"
+        - "{{ openscap_after_html }}"
+
+    - name: Assert that the after-scan artifacts are usable
+      ansible.builtin.assert:
+        that:
+          - openscap_after_artifacts.results[0].stat.exists
+          - openscap_after_artifacts.results[0].stat.size | int > 0
+          - openscap_after_artifacts.results[1].stat.exists
+          - openscap_after_artifacts.results[1].stat.size | int > 0
+        fail_msg: >-
+          OpenSCAP after-scan artifacts are missing or empty on
+          {{ inventory_hostname }}. Run the remediation step first.
+
+    - name: Read the after-scan ARF result
+      ansible.builtin.slurp:
+        src: "{{ openscap_after_xml }}"
+      register: openscap_after_file
+      when:
+        - openscap_ingest_url | length > 0
+        - openscap_api_token | length > 0
+
+    - name: Send the verified result to LinSec360
+      ansible.builtin.uri:
+        url: "{{ openscap_ingest_url.rstrip('/') }}/api/v1/compliance/scans"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ openscap_api_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          host_name: "{{ inventory_hostname }}"
+          profile: "{{ openscap_profile }}"
+          content: "{{ openscap_after_file.content | b64decode }}"
+        status_code: [200, 201]
+      no_log: true
+      when:
+        - openscap_ingest_url | length > 0
+        - openscap_api_token | length > 0

@@ -1,43 +1,70 @@
 ---
-# Security-only patch fallback.
-#
-# Uyuni is the primary patch control plane. This playbook is the break-glass
-# path for hosts that are not (yet) registered with Uyuni. It never reboots
-# automatically: set patch_reboot_allowed=true explicitly.
-- name: Apply security-only package updates
+# Native security patching. Targeted packages are supplied from selected
+# LinSec360 findings; an empty list falls back to distribution security
+# updates. Results are written back through the worker-provided API token.
+- name: Apply native security patches
   hosts: all
   become: true
   gather_facts: true
 
   vars:
+    patch_target_packages: "[]"
+    patch_target_cves: "[]"
     patch_reboot_allowed: false
     patch_reboot_timeout_seconds: 900
+    patch_ingest_url: ""
+    patch_api_token: ""
 
   tasks:
+    - name: Normalize targeted package and CVE lists
+      ansible.builtin.set_fact:
+        patch_packages: "{{ patch_target_packages | from_json if patch_target_packages is string else patch_target_packages }}"
+        patch_cves: "{{ patch_target_cves | from_json if patch_target_cves is string else patch_target_cves }}"
+
     - name: Record pre-patch boot identity
       ansible.builtin.command: cat /proc/sys/kernel/random/boot_id
       register: patch_boot_before
       changed_when: false
 
-    - name: Update the package cache on Debian family hosts
+    - name: Refresh the package cache on Debian family hosts
       ansible.builtin.apt:
         update_cache: true
         cache_valid_time: 3600
       when: ansible_os_family == "Debian"
 
-    - name: Install security updates on Debian family hosts
+    - name: Install selected packages on Debian family hosts
+      ansible.builtin.apt:
+        name: "{{ patch_packages }}"
+        state: latest
+      when:
+        - ansible_os_family == "Debian"
+        - patch_packages | length > 0
+
+    - name: Install selected packages on Red Hat family hosts
+      ansible.builtin.dnf:
+        name: "{{ patch_packages }}"
+        state: latest
+      when:
+        - ansible_os_family == "RedHat"
+        - patch_packages | length > 0
+
+    - name: Apply security updates when no packages were selected
       ansible.builtin.apt:
         upgrade: safe
         default_release: "{{ ansible_distribution_release }}-security"
-      when: ansible_os_family == "Debian"
+      when:
+        - ansible_os_family == "Debian"
+        - patch_packages | length == 0
 
-    - name: Install security updates on Red Hat family hosts
+    - name: Apply security updates when no packages were selected
       ansible.builtin.dnf:
         name: "*"
         state: latest
         security: true
         update_only: true
-      when: ansible_os_family == "RedHat"
+      when:
+        - ansible_os_family == "RedHat"
+        - patch_packages | length == 0
 
     - name: Check whether a reboot is required on Debian family hosts
       ansible.builtin.stat:
@@ -52,23 +79,56 @@
       failed_when: false
       when: ansible_os_family == "RedHat"
 
-    - name: Reboot the host when required and explicitly allowed
+    - name: Set the reboot requirement fact
+      ansible.builtin.set_fact:
+        patch_reboot_required: >-
+          {{ (ansible_os_family == 'Debian' and patch_reboot_required_debian.stat.exists)
+             or (ansible_os_family == 'RedHat' and patch_reboot_required_redhat.rc == 1) }}
+
+    - name: Reboot only when required and explicitly allowed
       ansible.builtin.reboot:
         reboot_timeout: "{{ patch_reboot_timeout_seconds }}"
         msg: "LinSec360 security patch reboot"
       when:
         - patch_reboot_allowed | bool
-        - (ansible_os_family == 'Debian' and patch_reboot_required_debian.stat.exists)
-          or (ansible_os_family == 'RedHat' and patch_reboot_required_redhat.rc == 1)
+        - patch_reboot_required | bool
 
-    - name: Record post-patch boot identity
-      ansible.builtin.command: cat /proc/sys/kernel/random/boot_id
-      register: patch_boot_after
-      changed_when: false
+    - name: Build patch result checks
+      ansible.builtin.set_fact:
+        patch_result_checks: >-
+          {{ patch_result_checks | default([]) + [{
+            'package': item,
+            'cve': (patch_cves[idx] if idx < patch_cves | length else ''),
+            'applied': true,
+            'reboot_required': patch_reboot_required | bool
+          }] }}
+      loop: "{{ patch_packages }}"
+      loop_control:
+        index_var: idx
+
+    - name: Send patch results to LinSec360
+      ansible.builtin.uri:
+        url: "{{ patch_ingest_url.rstrip('/') }}/api/v1/patching/results"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ patch_api_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          host_name: "{{ inventory_hostname }}"
+          checks: "{{ patch_result_checks | default([]) }}"
+        status_code: [200, 201]
+      no_log: true
+      when:
+        - patch_result_checks is defined
+        - patch_result_checks | length > 0
+        - patch_ingest_url | length > 0
+        - patch_api_token | length > 0
 
     - name: Report the patch outcome
       ansible.builtin.debug:
         msg:
           host: "{{ inventory_hostname }}"
-          rebooted: "{{ patch_boot_before.stdout != patch_boot_after.stdout }}"
+          packages: "{{ patch_packages }}"
+          reboot_required: "{{ patch_reboot_required }}"
           reboot_allowed: "{{ patch_reboot_allowed }}"

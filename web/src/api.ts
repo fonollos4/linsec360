@@ -10,6 +10,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers,
   })
   if (!response.ok) {
+    if (response.status === 401 && path !== '/auth/login') {
+      window.dispatchEvent(new CustomEvent('linsec:unauthorized'))
+    }
     let message = response.statusText
     try { const payload = await response.json() as { error?: { message?: string }; detail?: string }; message = payload.error?.message ?? payload.detail ?? message } catch {}
     throw new Error(message)
@@ -37,7 +40,6 @@ export interface Host {
   groups: string[]
   os: string | null
   ssh_status: string
-  ssh_fingerprint: string | null
   ssh_error: string | null
   last_ssh_test_at: string | null
 }
@@ -201,8 +203,6 @@ export interface SSHPublicKey {
 export interface SSHTest {
   reachable: boolean
   ssh_status: string
-  fingerprint: string | null
-  fingerprint_changed: boolean
   detected_os: string | null
   message: string
 }

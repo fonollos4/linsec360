@@ -160,10 +160,19 @@ if [[ ! -f "$ENV_FILE" ]]; then
 fi
 chmod 600 "$ENV_FILE"
 
+if ! grep -Eq '^LINSEC_INGEST_API_TOKEN=.+' "$ENV_FILE"; then
+    ingest_token="linsec_$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+    python3 "$REPOSITORY_ROOT/config/scripts/update-env.py" \
+        --env-file "$ENV_FILE" \
+        "LINSEC_INGEST_API_TOKEN=$ingest_token"
+    echo "Initialized LINSEC_INGEST_API_TOKEN in $ENV_FILE_REL (back it up)"
+fi
+
 python3 "$REPOSITORY_ROOT/config/scripts/update-env.py" \
     --env-file "$ENV_FILE" \
     "LINSEC_ENVIRONMENT=$ENVIRONMENT" \
     "LINSEC_BIND_ADDRESS=0.0.0.0" \
+    "LINSEC_INGEST_API_URL=http://api:8000" \
     "LINSEC_TLS_HOSTS=$HOSTNAME,$SERVER_IP,localhost,127.0.0.1" \
     "LINSEC_CORS_ORIGINS=$CORS_ORIGINS" \
     "LINSEC_WAZUH_MANAGER_ADDRESS=$SERVER_IP" \

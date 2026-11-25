@@ -93,6 +93,7 @@ const statusLabels: Record<string, string> = {
   completed: 'Terminé',
   open: 'Ouvert',
   resolved: 'Résolu',
+  reboot_required: 'Redémarrage requis',
   pass: 'Conforme',
   fail: 'Non conforme',
   warn: 'Avertissement',
@@ -105,8 +106,6 @@ const statusLabels: Record<string, string> = {
   unknown: 'Inconnu',
   stale: 'Obsolète',
   unverified: 'Non vérifié',
-  fingerprint_pending: 'Empreinte à valider',
-  fingerprint_changed: 'Empreinte modifiée',
   agent_detected: 'Agent détecté',
   available: 'Disponible',
 }
@@ -120,9 +119,9 @@ function humanize(value?: string | null): string {
 function statusTone(value?: string | null): string {
   const key = (value ?? '').toLowerCase()
   if (['success', 'succeeded', 'secured', 'reachable', 'ok', 'pass', 'compliant', 'active', 'connected', 'resolved', 'completed', 'available'].includes(key)) return 'success'
-  if (['failed', 'cancelled', 'canceled', 'error', 'critical', 'fail', 'unreachable', 'fingerprint_changed', 'open'].includes(key)) return 'danger'
+  if (['failed', 'cancelled', 'canceled', 'error', 'critical', 'fail', 'unreachable', 'open'].includes(key)) return 'danger'
   if (['running', 'queued', 'deploying', 'enrolling', 'pending', 'info', 'medium'].includes(key)) return 'info'
-  if (['warning', 'warn', 'stale', 'high', 'fingerprint_pending'].includes(key)) return 'warning'
+  if (['warning', 'warn', 'stale', 'high', 'reboot_required'].includes(key)) return 'warning'
   return 'muted'
 }
 
@@ -415,6 +414,25 @@ function EmptyState({ icon: Icon = Database, title, description }: { icon?: Luci
 
 function Loading({ label = 'Chargement…' }: { label?: string }) {
   return <div className="loading"><span className="spinner" />{label}</div>
+}
+
+const TERMINAL_DEPLOYMENT_STATUSES = new Set(['succeeded', 'failed', 'cancelled'])
+
+async function refreshAfterDeployment(
+  client: ReturnType<typeof useQueryClient>,
+  deploymentId: string,
+  queryKeys: Array<Array<string | number>>,
+) {
+  for (let attempt = 0; attempt < 180; attempt += 1) {
+    try {
+      const job = await api.deployment(deploymentId)
+      if (TERMINAL_DEPLOYMENT_STATUSES.has(job.status)) break
+    } catch {
+      break
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000))
+  }
+  await Promise.all(queryKeys.map((queryKey) => client.invalidateQueries({ queryKey })))
 }
 
 function Login({ onLogin }: { onLogin: () => void }) {
@@ -982,10 +1000,10 @@ function Hosts() {
           <div className="bulk-actions">
             <span className="badge info">{selectedCount} sélectionné(s)</span>
             <button className="secondary" onClick={() => groupedAction.mutate({ playbook: 'wazuh-agent.yml', label: 'Agent Wazuh' })}>Installer / mettre à jour l’agent</button>
-            <button className="secondary" onClick={() => groupedAction.mutate({ playbook: 'verify.yml', label: 'Contrôle MAC' })}>Vérifier SELinux / AppArmor</button>
-            <button className="secondary" onClick={() => groupedAction.mutate({ playbook: 'site.yml', label: 'Nettoyage' })}>Nettoyer les résidus</button>
+            <button className="secondary" onClick={() => groupedAction.mutate({ playbook: 'verify.yml', label: 'Contrôle baseline' })}>Vérifier la baseline</button>
+            <button className="secondary" onClick={() => groupedAction.mutate({ playbook: 'site.yml', label: 'Baseline' })}>Appliquer la baseline</button>
             <button className="secondary" onClick={() => groupedAction.mutate({ playbook: 'openscap-scan.yml', label: 'Audit OpenSCAP' })}>Auditer (OpenSCAP)</button>
-            <button className="secondary" onClick={() => groupedAction.mutate({ playbook: 'hardening.yml', label: 'Remédiation OpenSCAP' })}>Remédier</button>
+            <button className="secondary" onClick={() => groupedAction.mutate({ playbook: 'openscap-remediate.yml', label: 'Remédiation OpenSCAP' })}>Remédier</button>
           </div>
         )}
         {Object.entries(actionStates).map(([key, value]) => <div className="task-progress" key={key}><span className="spinner" />{key} — {value}</div>)}
@@ -1121,12 +1139,25 @@ function HostDetail() {
       })
       setActionStates((states) => ({ ...states, [label]: `Tâche ${deployment.id} en file` }))
       void client.invalidateQueries({ queryKey: ['deployments'] })
+      void refreshAfterDeployment(client, deployment.id, [
+        ['host-posture', id],
+        ['hosts'],
+        ['kpis'],
+        ['deployments'],
+      ])
     } catch (cause) {
       setActionStates((states) => ({ ...states, [label]: cause instanceof Error ? cause.message : 'Échec' }))
     }
   }
   const pendingFindings = currentPosture?.patch_findings.filter((finding) => finding.status !== 'resolved') ?? []
   const rebootRequired = pendingFindings.some((finding) => finding.reboot_required)
+  const openscapExtraVars: Record<string, string> = currentPosture?.compliance?.profile
+    ? { openscap_profile: currentPosture.compliance.profile }
+    : {}
+  const patchExtraVars = {
+    patch_target_packages: JSON.stringify([...new Set(pendingFindings.map((finding) => finding.package))]),
+    patch_target_cves: JSON.stringify([...new Set(pendingFindings.map((finding) => finding.cve).filter(Boolean))]),
+  }
 
   return (
     <div className="page">
@@ -1169,8 +1200,8 @@ function HostDetail() {
             }
           }}>Tester la connexion / détecter l’OS</button>
           <button className="secondary" onClick={() => void launch('wazuh-agent.yml', 'Agent Wazuh')}>Installer / mettre à jour l’agent Wazuh</button>
-          <button className="secondary" onClick={() => void launch('verify.yml', 'MAC')}>Vérifier SELinux / AppArmor</button>
-          <button className="secondary" onClick={() => void launch('site.yml', 'Nettoyage')}>Nettoyer les résidus Uyuni/Salt</button>
+          <button className="secondary" onClick={() => void launch('verify.yml', 'Baseline')}>Vérifier la baseline</button>
+          <button className="secondary" onClick={() => void launch('site.yml', 'Baseline')}>Appliquer la baseline</button>
         </div>
         {testMessage && <p className="host-import-note">{testMessage}</p>}
       </article>
@@ -1179,11 +1210,11 @@ function HostDetail() {
         <div className="panel-heading"><div><p className="eyebrow">Durcissement</p><h2>OpenSCAP — audit, remédiation, re-contrôle</h2></div><StatusBadge value={currentPosture?.compliance?.status ?? 'unknown'} /></div>
         <p className="host-import-note">Les rapports avant/après sont générés dans <code>/var/log/linsec360/</code>. La remédiation filtre les règles qui coupent SSH et n’ouvre pas les ports Wazuh 1514/1515.</p>
         <div className="form-actions">
-          <button className="secondary" onClick={() => void launch('openscap-scan.yml', 'Audit')}>1. Auditer (Scan)</button>
+          <button className="secondary" onClick={() => void launch('openscap-scan.yml', 'Audit', openscapExtraVars)}>1. Auditer (Scan)</button>
           <button className="danger" onClick={() => {
-            if (window.confirm('La remédiation peut modifier SSH, le pare-feu ou des services. Les règles SSH et Wazuh sont exclues. Continuer ?')) void launch('hardening.yml', 'Remédiation')
+            if (window.confirm('La remédiation peut modifier SSH, le pare-feu ou des services. Les règles SSH et Wazuh sont exclues. Continuer ?')) void launch('openscap-remediate.yml', 'Remédiation', openscapExtraVars)
           }}>2. Remédier</button>
-          <button className="secondary" onClick={() => void launch('verify.yml', 'Re-contrôle')}>3. Re-contrôler</button>
+          <button className="secondary" onClick={() => void launch('compliance-verify.yml', 'Re-contrôle', openscapExtraVars)}>3. Re-contrôler</button>
         </div>
         {currentPosture?.compliance && <div className="detail-grid">
           <div><span>Profil</span><strong>{currentPosture.compliance.profile}</strong></div>
@@ -1194,7 +1225,7 @@ function HostDetail() {
       </article>
 
       <article className="panel">
-        <div className="panel-heading"><div><p className="eyebrow">Patching — Option 2</p><h2>Livepatch et correctifs de sécurité</h2></div>{rebootRequired && <StatusBadge value="warning" label="Redémarrage requis" />}</div>
+        <div className="panel-heading"><div><p className="eyebrow">Patching natif</p><h2>Livepatch et correctifs de sécurité</h2></div>{rebootRequired && <StatusBadge value="warning" label="Redémarrage requis" />}</div>
         <div className="detail-grid">
           <div><span>Livepatch</span><strong>{currentPosture?.livepatch?.livepatch_state ?? 'Non détecté'}</strong></div>
           <div><span>Correctifs en attente</span><strong>{pendingFindings.length}</strong></div>
@@ -1202,7 +1233,8 @@ function HostDetail() {
         </div>
         <div className="form-actions">
           <button className="secondary" onClick={() => void launch('livepatch-check.yml', 'Livepatch')}>Vérifier le livepatch</button>
-          <button className="secondary" onClick={() => void launch('patch-security.yml', 'Correctifs')}>Vérifier / appliquer les correctifs ciblés</button>
+          <button className="secondary" disabled={!patchExtraVars.patch_target_packages || patchExtraVars.patch_target_packages === '[]'} onClick={() => void launch('patch-security.yml', 'Correctifs', patchExtraVars)}>Appliquer les correctifs ciblés</button>
+          <button className="secondary" disabled={!patchExtraVars.patch_target_packages || patchExtraVars.patch_target_packages === '[]'} onClick={() => void launch('patch-verify.yml', 'Vérification correctifs', patchExtraVars)}>Vérifier les correctifs</button>
         </div>
         {pendingFindings.length > 0 && <DataTable headers={['Paquet', 'CVE', 'Sévérité', 'Redémarrage']} rows={pendingFindings.slice(0, 20).map((finding) => [<strong key={finding.id}>{finding.package}</strong>, <span className="mono" key={`cve-${finding.id}`}>{finding.cve}</span>, <StatusBadge key={`sev-${finding.id}`} value={finding.severity} />, <span key={`reboot-${finding.id}`}>{finding.reboot_required ? 'Oui' : 'Non'}</span>])} />}
       </article>
@@ -1364,7 +1396,7 @@ function Compliance() {
   const [profile, setProfile] = useState('')
   const [launchError, setLaunchError] = useState('')
   const [stepMessage, setStepMessage] = useState('')
-  const launchStep = async (playbook: string, label: string, extraVars: Record<string, string> = {}) => {
+  const launchStep = async (playbook: string, label: string) => {
     if (label === 'Remédier' && !window.confirm('La remédiation peut impacter SSH, le pare-feu et des services. Les règles SSH et les ports Wazuh 1514/1515 sont exclus. Continuer ?')) return
     setStepMessage(`${label} : lancement…`)
     try {
@@ -1372,17 +1404,33 @@ function Compliance() {
         environment: (hosts.data ?? []).find((host) => host.name === hostName)?.environment ?? '',
         playbook,
         hosts: [hostName],
-        extra_vars: extraVars,
+        extra_vars: profile ? { openscap_profile: profile } : {},
       })
       setStepMessage(`${label} : tâche ${deployment.id} en file`)
       void client.invalidateQueries({ queryKey: ['deployments'] })
+      void refreshAfterDeployment(client, deployment.id, [
+        ['compliance'],
+        ['compliance-summary'],
+        ['kpis'],
+        ['deployments'],
+      ])
     } catch (cause) {
       setStepMessage(`${label} : ${cause instanceof Error ? cause.message : 'échec'}`)
     }
   }
   const launch = useMutation({
     mutationFn: () => api.createDeployment({ environment: (hosts.data ?? []).find((host) => host.name === hostName)?.environment ?? '', playbook: 'openscap-scan.yml', hosts: [hostName], extra_vars: profile ? { openscap_profile: profile } : {} }),
-    onSuccess: (deployment) => { setLaunchError(''); void client.invalidateQueries({ queryKey: ['compliance'] }); navigate(`/deployments/${deployment.id}`) },
+    onSuccess: (deployment) => {
+      setLaunchError('')
+      void client.invalidateQueries({ queryKey: ['deployments'] })
+      void refreshAfterDeployment(client, deployment.id, [
+        ['compliance'],
+        ['compliance-summary'],
+        ['kpis'],
+        ['deployments'],
+      ])
+      navigate(`/deployments/${deployment.id}`)
+    },
     onError: (cause) => setLaunchError(cause instanceof Error ? cause.message : 'Lancement impossible'),
   })
   if (isLoading) return <Loading label="Chargement des résultats OpenSCAP…" />
@@ -1415,8 +1463,8 @@ function Compliance() {
         </div>
         <p className="host-import-note">Rapports avant/après sous <code>/var/log/linsec360/</code>. La remédiation exclut les règles SSH et les ports Wazuh 1514/1515.</p>
         <div className="form-actions">
-          <button className="danger" disabled={!hostName} onClick={() => void launchStep('hardening.yml', 'Remédier')}>2. Remédier</button>
-          <button className="secondary" disabled={!hostName} onClick={() => void launchStep('verify.yml', 'Re-contrôle')}>3. Re-contrôler</button>
+          <button className="danger" disabled={!hostName} onClick={() => void launchStep('openscap-remediate.yml', 'Remédier')}>2. Remédier</button>
+          <button className="secondary" disabled={!hostName} onClick={() => void launchStep('compliance-verify.yml', 'Re-contrôle')}>3. Re-contrôler</button>
         </div>
         {stepMessage && <p className="host-import-note">{stepMessage}</p>}
         {launchError && <div className="alert error">{launchError}</div>}
@@ -1449,17 +1497,28 @@ function Patching() {
   const hosts = useQuery({ queryKey: ['hosts'], queryFn: api.hosts })
   const kpis = useQuery({ queryKey: ['kpis'], queryFn: api.kpis, refetchInterval: 30_000 })
   const [hostName, setHostName] = useState('')
+  const [selectedFindingIds, setSelectedFindingIds] = useState<number[]>([])
   const [patchMessage, setPatchMessage] = useState('')
-  const syncWazuh = useMutation({ mutationFn: api.syncWazuhPatches, onSuccess: () => void client.invalidateQueries({ queryKey: ['patch-findings'] }) })
-  const resolve = useMutation({ mutationFn: api.resolvePatch, onSuccess: () => void client.invalidateQueries({ queryKey: ['patch-findings'] }) })
-  const patchAction = async (playbook: string, label: string) => {
+  const refreshQueries = () => Promise.all([
+    client.invalidateQueries({ queryKey: ['patch-findings'] }),
+    client.invalidateQueries({ queryKey: ['kpis'] }),
+    client.invalidateQueries({ queryKey: ['deployments'] }),
+  ])
+  const syncWazuh = useMutation({ mutationFn: api.syncWazuhPatches, onSuccess: () => void refreshQueries() })
+  const resolve = useMutation({ mutationFn: api.resolvePatch, onSuccess: () => void refreshQueries() })
+  const patchAction = async (playbook: string, label: string, extraVars: Record<string, string> = {}) => {
     const target = (hosts.data ?? []).find((host) => host.name === hostName)
     if (!target) return
     setPatchMessage(`${label} : lancement…`)
     try {
-      const deployment = await api.createDeployment({ environment: target.environment, playbook, hosts: [target.name] })
+      const deployment = await api.createDeployment({ environment: target.environment, playbook, hosts: [target.name], extra_vars: extraVars })
       setPatchMessage(`${label} : tâche ${deployment.id} en file`)
       void client.invalidateQueries({ queryKey: ['deployments'] })
+      void refreshAfterDeployment(client, deployment.id, [
+        ['patch-findings'],
+        ['kpis'],
+        ['deployments'],
+      ])
     } catch (cause) {
       setPatchMessage(`${label} : ${cause instanceof Error ? cause.message : 'échec'}`)
     }
@@ -1470,6 +1529,15 @@ function Patching() {
   const critical = open.filter((finding) => finding.severity === 'critical').length
   const high = open.filter((finding) => finding.severity === 'high').length
   const reboots = open.filter((finding) => finding.reboot_required).length
+  const hostFindings = data.filter((finding) => finding.host_name === hostName && finding.status !== 'resolved')
+  const selectedFindings = selectedFindingIds.length
+    ? hostFindings.filter((finding) => selectedFindingIds.includes(finding.id))
+    : hostFindings
+  const targetPackages = JSON.stringify([...new Set(selectedFindings.map((finding) => finding.package))])
+  const targetCves = JSON.stringify([...new Set(selectedFindings.map((finding) => finding.cve).filter(Boolean))])
+  const patchExtraVars: Record<string, string> = selectedFindings.length
+    ? { patch_target_packages: targetPackages, patch_target_cves: targetCves }
+    : {}
   return (
     <div className="page">
       <PageHeader
@@ -1487,24 +1555,35 @@ function Patching() {
         <StatCard label="Total findings" item={{ value: data.length, status: 'ok' }} icon={Database} hint="toutes sources" />
       </section>
       <article className="panel">
-        <div className="panel-heading"><div><p className="eyebrow">Option 2</p><h2>Livepatch & mises à jour natives</h2></div><StatusBadge value={reboots ? 'warning' : 'success'} label={reboots ? `${formatNumber(reboots)} redémarrage(s) requis` : 'Aucun redémarrage requis'} /></div>
+        <div className="panel-heading"><div><p className="eyebrow">Patching natif</p><h2>Livepatch & correctifs ciblés</h2></div><StatusBadge value={reboots ? 'warning' : 'success'} label={reboots ? `${formatNumber(reboots)} redémarrage(s) requis` : 'Aucun redémarrage requis'} /></div>
         <div className="form-grid three">
-          <label>Hôte<select value={hostName} onChange={(event) => setHostName(event.target.value)}><option value="">Sélectionner</option>{(hosts.data ?? []).map((host) => <option key={host.id} value={host.name}>{host.name}</option>)}</select></label>
+          <label>Hôte<select value={hostName} onChange={(event) => { setHostName(event.target.value); setSelectedFindingIds([]) }}><option value="">Sélectionner</option>{(hosts.data ?? []).map((host) => <option key={host.id} value={host.name}>{host.name}</option>)}</select></label>
           <div className="detail-card"><p className="eyebrow">Exposition noyau</p><strong>{kpis.data?.kernel_exposure_days.value ?? '—'} jour(s)</strong></div>
           <div className="form-spacer"><button className="secondary" disabled={!hostName} onClick={() => void patchAction('livepatch-check.yml', 'Vérifier le livepatch')}>Vérifier le livepatch</button></div>
         </div>
+        <p className="host-import-note">Sélectionnez les correctifs à traiter dans le tableau ci-dessous. Sans sélection, tous les correctifs en attente de l’hôte sont ciblés. Le redémarrage reste manuel.</p>
         <div className="form-actions">
-          <button className="secondary" disabled={!hostName} onClick={() => void patchAction('patch-security.yml', 'Appliquer les correctifs')}>Appliquer les correctifs ciblés</button>
-          <button className="secondary" disabled={!hostName} onClick={() => void patchAction('verify.yml', 'Vérification')}>Vérifier l’état après application</button>
+          <button className="secondary" disabled={!hostName || !selectedFindings.length} onClick={() => void patchAction('patch-security.yml', 'Appliquer les correctifs', patchExtraVars)}>Appliquer les correctifs ciblés</button>
+          <button className="secondary" disabled={!hostName || !selectedFindings.length} onClick={() => void patchAction('patch-verify.yml', 'Vérification correctifs', patchExtraVars)}>Vérifier les correctifs</button>
         </div>
         {patchMessage && <p className="host-import-note">{patchMessage}</p>}
       </article>
       <article className="panel">
         <div className="panel-heading"><div><p className="eyebrow">Vulnérabilités</p><h2>Correctifs détectés</h2></div><span className="badge muted">{data.length}</span></div>
         <DataTable
-          headers={['Hôte', 'Paquet', 'CVE', 'Errata', 'Sévérité', 'Source', 'Statut', 'Action']}
+          headers={['', 'Hôte', 'Paquet', 'CVE', 'Errata', 'Sévérité', 'Source', 'Statut', 'Action']}
           empty="Aucun correctif connu"
           rows={data.map((finding: PatchFinding) => [
+            finding.status !== 'resolved'
+              ? <input
+                  key={`sel-${finding.id}`}
+                  type="checkbox"
+                  aria-label={`Sélectionner ${finding.package} sur ${finding.host_name}`}
+                  disabled={finding.host_name !== hostName}
+                  checked={selectedFindingIds.includes(finding.id)}
+                  onChange={() => setSelectedFindingIds((current) => current.includes(finding.id) ? current.filter((id) => id !== finding.id) : [...current, finding.id])}
+                />
+              : <span key={`sel-${finding.id}`}>—</span>,
             <span className="strong" key={`h-${finding.id}`}>{finding.host_name}</span>,
             <span className="mono" key={`p-${finding.id}`}>{finding.package}</span>,
             <span className="mono" key={`c-${finding.id}`}>{finding.cve || '—'}</span>,
@@ -2145,6 +2224,14 @@ function App() {
   const [authenticated, setAuthenticated] = useState(false)
   const me = useQuery({ queryKey: ['me'], queryFn: api.me, retry: false, enabled: !authenticated })
   const client = useQueryClient()
+  useEffect(() => {
+    const handleUnauthorized = () => {
+      client.clear()
+      setAuthenticated(false)
+    }
+    window.addEventListener('linsec:unauthorized', handleUnauthorized)
+    return () => window.removeEventListener('linsec:unauthorized', handleUnauthorized)
+  }, [client])
   if (!authenticated && me.isLoading) return <div className="login-page"><div className="loading"><span className="spinner" />Vérification de la session…</div></div>
   if (!authenticated && me.isError) return <Login onLogin={() => { setAuthenticated(true); void client.invalidateQueries() }} />
   const logout = async () => {

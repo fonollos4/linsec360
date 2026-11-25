@@ -103,7 +103,8 @@ with no manual Wazuh navigation required.
       login/password policy, package baseline, and service checks.
 - [x] SELinux management (mode, booleans, policy) from `config/selinux/` with
       `--check` / diff mode and drift reporting.
-- [x] `hardening.yml` and `hardening-audit.yml` with per-host JSON reports.
+- [x] `hardening.yml` with per-host JSON reports, plus the OpenSCAP scan /
+  remediate / verify workflow that reports per-host compliance.
 - [x] Persist hardening results and expose drift/score views.
 
 **Done when:** a host can be hardened, re-checked, and reported as compliant or

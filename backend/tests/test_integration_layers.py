@@ -382,6 +382,48 @@ def test_patch_finding_resolution(client: TestClient, csrf_headers):
     assert summary["patches"]["open"] == 0
 
 
+def test_patch_results_ingestion_updates_findings(client: TestClient, csrf_headers):
+    headers = csrf_headers()
+    create_host(client, headers)
+    with session_scope() as db:
+        db.add(
+            models.PatchFinding(
+                host_name="web01",
+                package="openssl",
+                cve="CVE-2026-0001",
+                severity="critical",
+                source="wazuh",
+                status="open",
+            )
+        )
+
+    response = client.post(
+        "/api/v1/patching/results",
+        headers=headers,
+        json={
+            "host_name": "web01",
+            "checks": [
+                {
+                    "package": "openssl",
+                    "cve": "CVE-2026-0001",
+                    "installed_version": "3.0.1",
+                    "applied": True,
+                    "verified": True,
+                    "reboot_required": False,
+                }
+            ],
+        },
+    )
+    assert response.status_code == 201, response.text
+    finding = response.json()[0]
+    assert finding["status"] == "resolved"
+    assert finding["current_version"] == "3.0.1"
+    assert finding["source"] == "wazuh"
+
+    summary = client.get("/api/v1/patching/summary").json()
+    assert summary["patches"]["open"] == 0
+
+
 def test_posture_aggregates_local_layers(client: TestClient, csrf_headers):
     headers = csrf_headers()
     host = create_host(client, headers).json()
@@ -850,25 +892,106 @@ def test_uyuni_server_auto_detection_skips_docker_service_alias(monkeypatch):
     assert settings.effective_uyuni_server == "patch.example"
 
 
-def test_wazuh_vulnerabilities_use_inventory_endpoint(monkeypatch):
-    client = wazuh_service.WazuhClient(settings=SimpleNamespace())
+def test_wazuh_vulnerabilities_use_indexer_state_documents(monkeypatch):
+    settings = SimpleNamespace(
+        wazuh_indexer_url="https://wazuh.indexer:9200",
+        wazuh_indexer_username="admin",
+        wazuh_indexer_password="indexer-secret",
+        wazuh_indexer_verify_tls=False,
+        wazuh_timeout_seconds=5,
+        wazuh_vulnerability_index="wazuh-states-vulnerabilities-*",
+    )
+    client = wazuh_service.WazuhClient(settings=settings)
     calls = []
 
-    def fake_get(path, params):
-        calls.append((path, params))
+    def fake_search(index: str, query: dict) -> dict:
+        calls.append((index, query))
         return {
-            "data": {
-                "affected_items": [
-                    {"package": {"name": "openssl"}, "cve": "CVE-2026-0001"}
+            "hits": {
+                "hits": [
+                    {
+                        "_source": {
+                            "agent": {"id": "002", "name": "web01"},
+                            "package": {"name": "openssl", "version": "3.0.0"},
+                            "vulnerability": {
+                                "id": "CVE-2026-0001",
+                                "severity": "High",
+                                "fixed_version": "3.0.1",
+                            },
+                        }
+                    }
                 ]
             }
         }
 
-    monkeypatch.setattr(client, "_get", fake_get)
+    monkeypatch.setattr(client, "_search_index", fake_search)
     vulnerabilities = client.list_vulnerabilities("002")
 
-    assert calls == [("/vulnerability/002/inventory", {"limit": 1000})]
-    assert vulnerabilities[0]["cve"] == "CVE-2026-0001"
+    assert calls == [
+        (
+            "wazuh-states-vulnerabilities-*",
+            {"size": 1000, "query": {"term": {"agent.id": "002"}}},
+        )
+    ]
+    assert vulnerabilities == [
+        {
+            "package": "openssl",
+            "current_version": "3.0.0",
+            "fixed_version": "3.0.1",
+            "cve": "CVE-2026-0001",
+            "severity": "high",
+            "status": "open",
+        }
+    ]
+
+
+def test_wazuh_indexer_search_uses_basic_auth_and_indexer_url(monkeypatch):
+    settings = SimpleNamespace(
+        wazuh_indexer_url="https://wazuh.indexer:9200/",
+        wazuh_indexer_username="admin",
+        wazuh_indexer_password="indexer-secret",
+        wazuh_indexer_verify_tls=False,
+        wazuh_timeout_seconds=5,
+        wazuh_ca_bundle=None,
+    )
+    client = wazuh_service.WazuhClient(settings=settings)
+    captured: dict = {}
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"hits": {"hits": []}}
+
+    class FakeClient:
+        def __init__(self, *, verify, timeout):
+            captured["verify"] = verify
+            captured["timeout"] = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def post(self, url, *, json, auth):
+            captured["url"] = url
+            captured["json"] = json
+            captured["auth"] = auth
+            return FakeResponse()
+
+    monkeypatch.setattr(wazuh_service.httpx, "Client", FakeClient)
+    payload = client._search_index("wazuh-states-vulnerabilities-*", {"size": 10})
+
+    assert payload == {"hits": {"hits": []}}
+    assert captured["url"] == (
+        "https://wazuh.indexer:9200/wazuh-states-vulnerabilities-*/_search"
+    )
+    assert captured["json"] == {"size": 10}
+    assert captured["auth"] == ("admin", "indexer-secret")
+    assert captured["verify"] is False
+    assert captured["timeout"] == 5
 
 
 def test_wazuh_connection_test_reports_api_agent_count(

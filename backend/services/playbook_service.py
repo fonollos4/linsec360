@@ -18,6 +18,8 @@ from ..schemas import PLAYBOOK_FILENAME
 
 logger = logging.getLogger(__name__)
 
+BUNDLED_DESCRIPTION = "Imported from taskengine/playbooks"
+
 
 def _validate_yaml(content: str) -> None:
     if not content.strip():
@@ -131,14 +133,18 @@ def materialize(playbook: models.Playbook, directory: Path) -> Path:
 
 
 def seed_from_directory(db: Session, directory: Path) -> int:
-    """Import bundled playbooks into the DB without overwriting user edits."""
+    """Synchronize the DB library with the bundled taskengine playbooks.
+
+    ``taskengine/playbooks`` is the single source of truth for bundled
+    automation. Imported rows are refreshed in place and removed when their
+    source file is deleted; user-created playbooks are never touched.
+    """
     if not directory.is_dir():
         return 0
-    created = 0
+
+    bundled: dict[str, tuple[str, str]] = {}
     for path in sorted(directory.iterdir()):
         if not path.is_file() or not PLAYBOOK_FILENAME.fullmatch(path.name):
-            continue
-        if get_by_filename(db, path.name) is not None:
             continue
         try:
             content = path.read_text(encoding="utf-8")
@@ -146,15 +152,37 @@ def seed_from_directory(db: Session, directory: Path) -> int:
         except (OSError, UnicodeDecodeError, ValueError):
             logger.warning("Skipping unreadable or invalid playbook: %s", path)
             continue
-        db.add(
-            models.Playbook(
-                filename=path.name,
-                content=content,
-                checksum=_checksum(content),
-                description="Imported from taskengine/playbooks",
+        bundled[path.name] = (content, _checksum(content))
+
+    created = updated = removed = 0
+    for filename, (content, checksum) in bundled.items():
+        playbook = get_by_filename(db, filename)
+        description = f"{BUNDLED_DESCRIPTION}:{checksum}"
+        if playbook is None:
+            db.add(
+                models.Playbook(
+                    filename=filename,
+                    content=content,
+                    checksum=checksum,
+                    description=description,
+                )
             )
-        )
-        created += 1
-    if created:
+            created += 1
+        elif (playbook.description or "").startswith(BUNDLED_DESCRIPTION):
+            if playbook.content != content or playbook.checksum != checksum:
+                playbook.content = content
+                playbook.checksum = checksum
+                playbook.description = description
+                updated += 1
+
+    for playbook in db.query(models.Playbook).all():
+        if (
+            playbook.filename not in bundled
+            and (playbook.description or "").startswith(BUNDLED_DESCRIPTION)
+        ):
+            db.delete(playbook)
+            removed += 1
+
+    if created or updated or removed:
         db.commit()
-    return created
+    return created + updated + removed

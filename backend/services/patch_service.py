@@ -38,6 +38,62 @@ def list_findings(
     )
 
 
+def ingest_results(
+    db: Session,
+    *,
+    host_name: str,
+    checks: list[dict],
+) -> list[models.PatchFinding]:
+    """Apply evidence reported by patch/verify playbooks to patch findings."""
+    touched: list[models.PatchFinding] = []
+    for check in checks:
+        package = check["package"]
+        cve = check.get("cve") or ""
+        records = (
+            db.query(models.PatchFinding)
+            .filter(
+                models.PatchFinding.host_name == host_name,
+                models.PatchFinding.package == package,
+                models.PatchFinding.cve == cve,
+            )
+            .all()
+        )
+        if not records:
+            host = (
+                db.query(models.Host)
+                .filter(models.Host.name == host_name)
+                .one_or_none()
+            )
+            record = models.PatchFinding(
+                host_id=host.id if host else None,
+                host_name=host_name,
+                package=package,
+                cve=cve,
+                source="native",
+                severity="unknown",
+            )
+            db.add(record)
+            records = [record]
+
+        reboot_required = bool(check.get("reboot_required"))
+        applied = bool(check.get("applied"))
+        verified = bool(check.get("verified"))
+        status = "open"
+        if applied or verified:
+            status = "reboot_required" if reboot_required else "resolved"
+        installed_version = check.get("installed_version")
+        for record in records:
+            if installed_version:
+                record.current_version = installed_version
+            record.reboot_required = reboot_required
+            record.status = status
+            touched.append(record)
+    db.commit()
+    for record in touched:
+        db.refresh(record)
+    return touched
+
+
 def resolve(db: Session, finding_id: int) -> models.PatchFinding:
     finding = db.get(models.PatchFinding, finding_id)
     if finding is None:

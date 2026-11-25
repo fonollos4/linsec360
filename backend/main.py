@@ -21,7 +21,7 @@ from .api.router import api_router
 from .config import get_settings
 from .db import create_all, session_scope
 from .errors import DomainError
-from .security import hash_password
+from .security import hash_password, provision_api_token
 from .services import playbook_service
 
 logger = logging.getLogger(__name__)
@@ -53,6 +53,20 @@ def _bootstrap_admin() -> None:
         )
 
 
+def _provision_ingest_token() -> None:
+    settings = get_settings()
+    token = settings.ingest_api_token_value
+    if not token:
+        return
+    with session_scope() as db:
+        provision_api_token(
+            db,
+            plaintext=token,
+            name="automation-ingest",
+            username="linsec-automation",
+        )
+
+
 def _prepare_directories() -> None:
     settings = get_settings()
     for directory in (
@@ -80,6 +94,7 @@ async def lifespan(app: FastAPI):
     if imported:
         logger.info("Imported %s bundled playbook(s)", imported)
     _bootstrap_admin()
+    _provision_ingest_token()
     logger.info("LinSec360 API %s started", __version__)
     from .services.operations_service import scheduler_loop
 

@@ -2,7 +2,13 @@ from fastapi.testclient import TestClient
 
 from backend import models
 from backend.db import session_scope
-from backend.security import create_session, decode_session_token
+from backend.security import (
+    create_session,
+    decode_session_token,
+    hash_api_token,
+    provision_api_token,
+    revoke_api_token,
+)
 
 
 def test_session_id_fits_database_column(client: TestClient):
@@ -151,3 +157,36 @@ def test_viewer_cannot_mutate(client: TestClient, csrf_headers):
     )
     assert response.status_code == 403
     assert client.get("/api/v1/hosts").status_code == 200
+
+
+def test_provisioned_automation_token_is_hashed_and_revocable(
+    client: TestClient,
+):
+    plaintext = "linsec_automation_test_token"
+    with session_scope() as db:
+        provision_api_token(
+            db,
+            plaintext=plaintext,
+            name="automation-ingest",
+            username="linsec-automation",
+        )
+        record = (
+            db.query(models.ApiToken)
+            .filter(models.ApiToken.name == "automation-ingest")
+            .one()
+        )
+        assert record.token_hash == hash_api_token(plaintext)
+        assert plaintext not in record.token_hash
+
+    headers = {"Authorization": f"Bearer {plaintext}"}
+    assert client.get("/api/v1/hosts", headers=headers).status_code == 200
+
+    with session_scope() as db:
+        record = (
+            db.query(models.ApiToken)
+            .filter(models.ApiToken.name == "automation-ingest")
+            .one()
+        )
+        revoke_api_token(db, record)
+
+    assert client.get("/api/v1/hosts", headers=headers).status_code == 401

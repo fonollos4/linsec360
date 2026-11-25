@@ -570,6 +570,20 @@ class LivepatchIn(BaseModel):
     exposure_days: int | None = Field(default=None, ge=0)
 
 
+class PatchResultCheckIn(BaseModel):
+    package: str = Field(min_length=1, max_length=255)
+    cve: str = Field(default="", max_length=64)
+    installed_version: str | None = Field(default=None, max_length=128)
+    applied: bool = False
+    verified: bool = False
+    reboot_required: bool = False
+
+
+class PatchResultsIn(BaseModel):
+    host_name: str = Field(min_length=1, max_length=64)
+    checks: list[PatchResultCheckIn] = Field(min_length=1, max_length=500)
+
+
 class HardeningCheckIn(BaseModel):
     category: str = Field(min_length=1, max_length=64)
     control: str = Field(min_length=1, max_length=128)

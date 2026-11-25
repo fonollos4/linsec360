@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 from backend import models
 from backend.db import session_scope
@@ -113,13 +114,30 @@ def test_worker_runs_ansible_and_updates_state(
     from backend.config import get_settings
 
     headers = csrf_headers()
-    response = _create_deployment(client, headers)
+    create_host(client, headers, ssh_fingerprint="SHA256:" + "F" * 43)
+    create_playbook(client, headers)
+    response = client.post(
+        "/api/v1/deployments",
+        headers=headers,
+        json={
+            "environment": "production",
+            "playbook": "custom.yml",
+            "hosts": ["web01"],
+            "extra_vars": {
+                "openscap_api_token": "attacker-token",
+                "patch_api_token": "attacker-token",
+            },
+        },
+    )
+    assert response.status_code == 202, response.text
     deployment_id = response.json()["id"]
 
     captured: dict = {}
     settings = get_settings()
     monkeypatch.setattr(settings, "wazuh_manager_address", "")
     monkeypatch.setattr(settings, "wazuh_api_url", "https://192.0.2.25:55000")
+    monkeypatch.setattr(settings, "ingest_api_url", "http://api:8000")
+    monkeypatch.setattr(settings, "ingest_api_token", SecretStr("linsec-worker-token"))
     with session_scope() as db:
         db.add(
             models.RuntimeSetting(
@@ -175,6 +193,12 @@ def test_worker_runs_ansible_and_updates_state(
     assert captured["extra_vars"]["linsec_wazuh_manager_address"] == "192.0.2.25"
     assert captured["extra_vars"]["linsec_wazuh_manager_agent_port"] == 1614
     assert captured["extra_vars"]["linsec_wazuh_manager_enrollment_port"] == 1615
+    assert captured["extra_vars"]["openscap_ingest_url"] == "http://api:8000"
+    assert captured["extra_vars"]["openscap_api_token"] == "linsec-worker-token"
+    assert captured["extra_vars"]["patch_ingest_url"] == "http://api:8000"
+    assert captured["extra_vars"]["patch_api_token"] == "linsec-worker-token"
+    assert captured["extra_vars"]["hardening_api_token"] == "linsec-worker-token"
+    assert captured["extra_vars"]["livepatch_api_token"] == "linsec-worker-token"
     assert not any(
         key.startswith("linsec_uyuni_") for key in captured["extra_vars"]
     )

@@ -34,6 +34,24 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _ingest_extra_vars(settings) -> dict[str, str]:
+    """Callback variables for playbooks that persist scan/patch evidence."""
+    token = settings.ingest_api_token_value
+    if not token:
+        return {}
+    base = settings.ingest_api_url.rstrip("/")
+    return {
+        "openscap_ingest_url": base,
+        "openscap_api_token": token,
+        "hardening_ingest_url": base,
+        "hardening_api_token": token,
+        "livepatch_ingest_url": base,
+        "livepatch_api_token": token,
+        "patch_ingest_url": base,
+        "patch_api_token": token,
+    }
+
+
 def _write_extra_vars(values: dict, directory: Path) -> Path:
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     descriptor, path = tempfile.mkstemp(
@@ -228,6 +246,9 @@ def run_deployment(deployment_id: str) -> None:
                         settings.wazuh_manager_enrollment_port
                     ),
                     **deployment.extra_vars,
+                    # Injected last so a deployment payload cannot override the
+                    # worker-owned callback credentials.
+                    **_ingest_extra_vars(settings),
                 },
                 settings.log_dir,
             )

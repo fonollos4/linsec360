@@ -1,0 +1,45 @@
+---
+# Apply the filtered OpenSCAP baseline and ingest the after-scan result.
+# Rules that would stop SSH or touch Wazuh ports are excluded by the role.
+- name: Remediate OpenSCAP findings
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    linsec_config_dir: "{{ playbook_dir ~ '/../../config' }}"
+    openscap_profile: xccdf_org.ssgproject.content_profile_standard
+    openscap_log_dir: /var/log/linsec360
+    openscap_after_xml: "{{ openscap_log_dir }}/oscap-after.xml"
+    openscap_ingest_url: ""
+    openscap_api_token: ""
+
+  roles:
+    - role: hardening_openscap
+
+  tasks:
+    - name: Read the post-remediation ARF result for API ingestion
+      ansible.builtin.slurp:
+        src: "{{ openscap_after_xml }}"
+      register: openscap_after_file
+      when:
+        - openscap_ingest_url | length > 0
+        - openscap_api_token | length > 0
+
+    - name: Send the post-remediation result to LinSec360
+      ansible.builtin.uri:
+        url: "{{ openscap_ingest_url.rstrip('/') }}/api/v1/compliance/scans"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ openscap_api_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          host_name: "{{ inventory_hostname }}"
+          profile: "{{ openscap_profile }}"
+          content: "{{ openscap_after_file.content | b64decode }}"
+        status_code: [200, 201]
+      no_log: true
+      when:
+        - openscap_ingest_url | length > 0
+        - openscap_api_token | length > 0

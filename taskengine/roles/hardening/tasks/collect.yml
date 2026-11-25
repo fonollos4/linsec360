@@ -211,7 +211,7 @@
       checks: "{{ hardening_checks }}"
     status_code: [200, 201]
   register: hardening_ingest
-  failed_when: false
+  no_log: true
   when:
     - hardening_ingest_url | length > 0
     - hardening_api_token | length > 0

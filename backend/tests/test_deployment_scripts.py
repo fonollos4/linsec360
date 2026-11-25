@@ -195,6 +195,8 @@ def test_deploy_script_uses_distinct_projects_and_ip_bind(tmp_path: Path):
     assert "http://$SERVER_IP:$API_PORT/health" in script
     assert 'ENV_FILE_REL=".env"' in script
     assert 'ENV_FILE_REL=".env.development"' in script
+    assert "LINSEC_INGEST_API_TOKEN=.+" in script
+    assert "LINSEC_INGEST_API_URL=http://api:8000" in script
 
     compose = (ROOT / "docker-compose.v2.yml").read_text(encoding="utf-8")
     # Wazuh's init script appends to /etc/filebeat/filebeat.yml on every start;
