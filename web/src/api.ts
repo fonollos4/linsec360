@@ -294,8 +294,8 @@ export const api = {
   },
   createDeployment: (body: { environment: string; playbook: string; hosts: string[]; group?: string; check_mode?: boolean; extra_vars?: Record<string, string> }) =>
     mutating<Deployment>('/deployments', 'POST', body),
-  cancelDeployment: (id: string) => mutating(`/deployments/${id}/cancel`, 'POST'),
-  retryDeployment: (id: string) => mutating(`/deployments/${id}/retry`, 'POST'),
+  cancelDeployment: (id: string) => mutating<Deployment>(`/deployments/${id}/cancel`, 'POST'),
+  retryDeployment: (id: string) => mutating<Deployment>(`/deployments/${id}/retry`, 'POST'),
   complianceScans: () => request<ComplianceScan[]>('/compliance/scans'),
   complianceProfiles: () => request<string[]>('/compliance/profiles'),
   complianceSummary: () => request<{ hosts_scanned: number; average_score: number | null; worst_hosts: Array<{ host: string; score: number }> }>('/compliance/summary'),

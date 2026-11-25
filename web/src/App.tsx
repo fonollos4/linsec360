@@ -1,20 +1,25 @@
 import { useId, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { Terminal as XTerm } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
+import '@xterm/xterm/css/xterm.css'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity,
   ArrowUpRight,
-  Bell,
   Boxes,
+  Check,
   ChevronLeft,
   ChevronRight,
+  Copy,
   Cpu,
   Database,
   FileCode2,
   Gauge,
   HardDrive,
-  LayoutDashboard,
   LogOut,
+  Maximize2,
+  Minimize2,
   Play,
   Plus,
   Radar,
@@ -22,12 +27,11 @@ import {
   ScanLine,
   Search,
   Server,
-  Settings as SettingsIcon,
   ShieldAlert,
   ShieldCheck,
   Terminal,
+  Trash2,
   TriangleAlert,
-  UserRound,
   X,
   type LucideIcon,
 } from 'lucide-react'
@@ -43,41 +47,10 @@ import {
   type IntegrationState,
   type StackConfiguration,
 } from './api'
-
-type NavItem = { to: string; label: string; icon: LucideIcon }
-
-const navGroups: Array<{ label: string; items: NavItem[] }> = [
-  {
-    label: 'Pilotage',
-    items: [
-      { to: '/', label: 'Vue d’ensemble', icon: LayoutDashboard },
-      { to: '/hosts', label: 'Hôtes', icon: HardDrive },
-    ],
-  },
-  {
-    label: 'Automatisation',
-    items: [
-      { to: '/deployments', label: 'Déploiements', icon: Play },
-      { to: '/playbooks', label: 'Playbooks', icon: FileCode2 },
-    ],
-  },
-  {
-    label: 'Sécurité',
-    items: [
-      { to: '/compliance', label: 'Conformité', icon: ShieldCheck },
-      { to: '/patching', label: 'Correctifs', icon: Boxes },
-      { to: '/detection', label: 'Détection', icon: Radar },
-    ],
-  },
-  {
-    label: 'Système',
-    items: [
-      { to: '/audit', label: 'Audit', icon: Activity },
-      { to: '/profile', label: 'Profil', icon: UserRound },
-      { to: '/settings', label: 'Paramètres', icon: SettingsIcon },
-    ],
-  },
-]
+import { useNotifications, type NotificationInput } from './notification-context'
+import { NotificationMenu } from './notifications'
+import { CommandPalette } from './command-palette'
+import { navGroups } from './nav-items'
 
 const SIDEBAR_STORAGE_KEY = 'linsec:sidebar-collapsed'
 const hostIdentifier = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/
@@ -527,6 +500,8 @@ async function refreshAfterDeployment(
   client: ReturnType<typeof useQueryClient>,
   deploymentId: string,
   queryKeys: Array<Array<string | number>>,
+  notify?: (input: NotificationInput) => void,
+  label = 'Déploiement',
 ): Promise<Deployment | undefined> {
   let job: Deployment | undefined
   for (let attempt = 0; attempt < 180; attempt += 1) {
@@ -539,17 +514,31 @@ async function refreshAfterDeployment(
     await new Promise((resolve) => setTimeout(resolve, 2000))
   }
   await Promise.all(queryKeys.map((queryKey) => client.invalidateQueries({ queryKey })))
+  if (job?.status === 'succeeded') {
+    notify?.({ tone: 'success', title: `${label} terminé`, message: `Tâche ${deploymentId} : exécution réussie.`, href: `/deployments/${deploymentId}` })
+  } else if (job?.status === 'failed') {
+    notify?.({ tone: 'error', title: `${label} échoué`, message: job.error_message || 'Consultez le journal du déploiement.', href: `/deployments/${deploymentId}` })
+  } else if (job?.status === 'cancelled') {
+    notify?.({ tone: 'warning', title: `${label} annulé`, message: `Tâche ${deploymentId}.`, href: `/deployments/${deploymentId}` })
+  }
   return job
 }
 
 function Login({ onLogin }: { onLogin: () => void }) {
+  const { notify } = useNotifications()
   const [username, setUsername] = useState('admin')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const login = useMutation({
     mutationFn: () => api.login(username, password),
-    onSuccess: onLogin,
-    onError: (cause) => setError(cause instanceof Error ? cause.message : 'Connexion impossible'),
+    onSuccess: () => {
+      notify({ tone: 'success', title: 'Session ouverte', message: `Bienvenue, ${username}.` })
+      onLogin()
+    },
+    onError: (cause) => {
+      setError(cause instanceof Error ? cause.message : 'Connexion impossible')
+      notify({ tone: 'error', title: 'Connexion refusée', message: cause instanceof Error ? cause.message : 'Vérifiez vos identifiants.' })
+    },
   })
   return (
     <main className="login-page">
@@ -788,6 +777,7 @@ function launchDeploymentsForHosts(
 function Hosts() {
   const client = useQueryClient()
   const navigate = useNavigate()
+  const { notify } = useNotifications()
   const currentUser = useQuery({ queryKey: ['me'], queryFn: api.me })
   const canManageHosts = currentUser.data?.role === 'admin' || currentUser.data?.role === 'operator'
   const kpis = useQuery({ queryKey: ['kpis'], queryFn: api.kpis, refetchInterval: 30_000 })
@@ -831,6 +821,7 @@ function Hosts() {
     }),
     onSuccess: async (host) => {
       setNotice(`${host.name} ajouté à l’inventaire Ansible.`)
+      notify({ tone: 'success', title: 'Hôte ajouté', message: `${host.name} est dans l’inventaire Ansible.` })
       setShowForm(false)
       setForm({ ...defaultBulkOptions, groups: '', name: '', ip: '', security_level: 'high' })
       setTestResult({ state: 'idle', message: '' })
@@ -849,6 +840,7 @@ function Hosts() {
       void client.invalidateQueries({ queryKey: ['hosts'] })
       void client.invalidateQueries({ queryKey: ['deployments'] })
     },
+    onError: (cause) => notify({ tone: 'error', title: 'Ajout impossible', message: cause instanceof Error ? cause.message : 'Erreur inconnue' }),
   })
   const testConnection = useMutation({
     mutationFn: () => api.testHostConnection({
@@ -868,14 +860,21 @@ function Hosts() {
   })
   const updateHost = useMutation({
     mutationFn: (change: { id: number; body: Record<string, unknown> }) => api.updateHost(change.id, change.body),
-    onSuccess: () => {
+    onSuccess: (host) => {
       setEditingHost(null)
       void client.invalidateQueries({ queryKey: ['hosts'] })
+      notify({ tone: 'success', title: 'Hôte mis à jour', message: host.name })
     },
+    onError: (cause) => notify({ tone: 'error', title: 'Mise à jour impossible', message: cause instanceof Error ? cause.message : 'Erreur inconnue' }),
   })
   const deleteHost = useMutation({
     mutationFn: api.deleteHost,
-    onSuccess: () => { setSelectedIds([]); void client.invalidateQueries({ queryKey: ['hosts'] }) },
+    onSuccess: () => {
+      setSelectedIds([])
+      void client.invalidateQueries({ queryKey: ['hosts'] })
+      notify({ tone: 'warning', title: 'Hôte supprimé de l’inventaire' })
+    },
+    onError: (cause) => notify({ tone: 'error', title: 'Suppression impossible', message: cause instanceof Error ? cause.message : 'Erreur inconnue' }),
   })
   const bulkImport = useMutation({
     mutationFn: async (): Promise<BulkSummary> => {
@@ -921,7 +920,13 @@ function Hosts() {
       setBulkSummary(summary)
       void client.invalidateQueries({ queryKey: ['hosts'] })
       void client.invalidateQueries({ queryKey: ['deployments'] })
+      notify({
+        tone: summary.failed.length ? 'warning' : 'success',
+        title: 'Import terminé',
+        message: `${formatNumber(summary.imported.length)} hôte(s) ajouté(s), ${formatNumber(summary.failed.length)} échec(s).`,
+      })
     },
+    onError: (cause) => notify({ tone: 'error', title: 'Import impossible', message: cause instanceof Error ? cause.message : 'Erreur inconnue' }),
   })
   const groupedAction = useMutation({
     mutationFn: ({ playbook, label, extraVars }: { playbook: string; label: string; extraVars?: Record<string, string> }) =>
@@ -935,10 +940,17 @@ function Hosts() {
       const key = `${variables.label}:${selectedIds.length}`
       setActionStates((current) => ({ ...current, [key]: `${deployments.length} tâche(s) en file` }))
       void client.invalidateQueries({ queryKey: ['deployments'] })
+      notify({
+        tone: 'info',
+        title: `${variables.label} lancé`,
+        message: `${formatNumber(deployments.length)} tâche(s) en file.`,
+        href: '/deployments',
+      })
     },
     onError: (cause, variables) => {
       const key = `${variables.label}:${selectedIds.length}`
       setActionStates((current) => ({ ...current, [key]: cause instanceof Error ? cause.message : 'Échec' }))
+      notify({ tone: 'error', title: `${variables.label} impossible`, message: cause instanceof Error ? cause.message : 'Erreur inconnue' })
     },
   })
 
@@ -1147,75 +1159,177 @@ function Hosts() {
 }
 
 function HostTerminal({ host, onClose }: { host: Host; onClose: () => void }) {
-  const [lines, setLines] = useState<string[]>([])
-  const [input, setInput] = useState('')
   const [connected, setConnected] = useState(false)
+  const [status, setStatus] = useState('Connexion au terminal…')
+  const [expanded, setExpanded] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const surfaceRef = useRef<HTMLDivElement | null>(null)
+  const termRef = useRef<XTerm | null>(null)
+  const fitRef = useRef<FitAddon | null>(null)
   const socketRef = useRef<WebSocket | null>(null)
-  const outputRef = useRef<HTMLPreElement | null>(null)
-
-  useEffect(() => {
-    const socket = new WebSocket(api.terminalUrl(host.id))
-    socketRef.current = socket
-    socket.onopen = () => setConnected(true)
-    socket.onclose = () => setConnected(false)
-    socket.onmessage = (event) => {
-      try {
-        const message = JSON.parse(String(event.data)) as { type: string; data?: string; message?: string }
-        const text = message.type === 'output' ? message.data ?? '' : `${message.message ?? ''}\n`
-        setLines((current) => [...current.slice(-5000), text])
-      } catch {
-        setLines((current) => [...current, String(event.data)])
-      }
-    }
-    return () => { socket.close(); socketRef.current = null }
-  }, [host.id])
-
-  useEffect(() => {
-    if (outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight
-  }, [lines])
 
   const sendResize = () => {
-    const element = outputRef.current
-    if (!element || socketRef.current?.readyState !== WebSocket.OPEN) return
-    const rect = element.getBoundingClientRect()
-    const cols = Math.max(20, Math.min(400, Math.floor(rect.width / 8)))
-    const rows = Math.max(8, Math.min(200, Math.floor(rect.height / 18)))
-    socketRef.current.send(JSON.stringify({ type: 'resize', cols, rows }))
+    const term = termRef.current
+    const socket = socketRef.current
+    if (!term || socket?.readyState !== WebSocket.OPEN) return
+    const { cols, rows } = term
+    socket.send(JSON.stringify({ type: 'resize', cols, rows }))
   }
 
   useEffect(() => {
-    const element = outputRef.current
-    if (!element) return
-    const observer = new ResizeObserver(sendResize)
-    observer.observe(element)
-    sendResize()
-    return () => observer.disconnect()
-  }, [])
+    const surface = surfaceRef.current
+    if (!surface) return
+
+    const term = new XTerm({
+      cursorBlink: true,
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+      fontSize: 13,
+      lineHeight: 1.4,
+      scrollback: 5000,
+      theme: {
+        background: '#08111f',
+        foreground: '#d7e6f7',
+        cursor: '#7dd3fc',
+        cursorAccent: '#08111f',
+        selectionBackground: 'rgba(125, 211, 252, 0.28)',
+        black: '#0b1220',
+        red: '#f87171',
+        green: '#4ade80',
+        yellow: '#fbbf24',
+        blue: '#60a5fa',
+        magenta: '#c084fc',
+        cyan: '#22d3ee',
+        white: '#e2e8f0',
+        brightBlack: '#64748b',
+        brightRed: '#fca5a5',
+        brightGreen: '#86efac',
+        brightYellow: '#fde68a',
+        brightBlue: '#93c5fd',
+        brightMagenta: '#d8b4fe',
+        brightCyan: '#67e8f9',
+        brightWhite: '#f8fafc',
+      },
+    })
+    const fitAddon = new FitAddon()
+    term.loadAddon(fitAddon)
+    term.open(surface)
+    termRef.current = term
+    fitRef.current = fitAddon
+
+    const socket = new WebSocket(api.terminalUrl(host.id))
+    socketRef.current = socket
+    socket.onopen = () => {
+      setConnected(true)
+      setStatus('Connecté')
+      term.writeln('\x1b[32mSession connectée.\x1b[0m')
+    }
+    socket.onmessage = (event) => {
+      try {
+        const message = JSON.parse(String(event.data)) as { type: string; data?: string; message?: string }
+        if (message.type === 'output') {
+          term.write(message.data ?? '')
+        } else if (message.type === 'status') {
+          setStatus(message.message ?? 'Session ouverte')
+          term.writeln(`\x1b[36m${message.message ?? ''}\x1b[0m`)
+        } else if (message.message) {
+          term.writeln(`\x1b[33m${message.message}\x1b[0m`)
+        }
+      } catch {
+        term.write(String(event.data))
+      }
+    }
+    socket.onerror = () => setStatus('Erreur de connexion')
+    socket.onclose = () => {
+      setConnected(false)
+      setStatus('Session fermée')
+      term.writeln('\r\n\x1b[33mSession terminée.\x1b[0m')
+    }
+
+    const input = term.onData((data) => {
+      if (socket.readyState !== WebSocket.OPEN) return
+      socket.send(JSON.stringify({ type: 'input', data }))
+    })
+
+    try {
+      fitAddon.fit()
+      sendResize()
+    } catch {
+      // The drawer may still be hidden while it animates in.
+    }
+    term.focus()
+
+    const observer = new ResizeObserver(() => {
+      try {
+        fitAddon.fit()
+        sendResize()
+      } catch {
+        // Ignore transient zero-sized layouts.
+      }
+    })
+    observer.observe(surface)
+
+    return () => {
+      observer.disconnect()
+      input.dispose()
+      socket.close()
+      socketRef.current = null
+      term.dispose()
+      termRef.current = null
+      fitRef.current = null
+    }
+  }, [host.id])
+
+  useEffect(() => {
+    try {
+      fitRef.current?.fit()
+      sendResize()
+    } catch {
+      // Ignore transient zero-sized layouts.
+    }
+  }, [expanded])
+
+  useEffect(() => {
+    if (!copied) return
+    const timer = window.setTimeout(() => setCopied(false), 1600)
+    return () => window.clearTimeout(timer)
+  }, [copied])
+
+  const copySelection = async () => {
+    const selection = termRef.current?.getSelection() ?? ''
+    if (!selection) return
+    await navigator.clipboard.writeText(selection)
+    setCopied(true)
+    termRef.current?.focus()
+  }
 
   return (
     <div className="drawer-backdrop" role="presentation" onClick={onClose}>
-      <aside className="terminal-drawer" onClick={(event) => event.stopPropagation()}>
-        <div className="panel-heading">
-          <div><p className="eyebrow">Terminal interactif</p><h2>{host.name} <span className="mono">{host.ansible_user}@{host.ip}</span></h2></div>
-          <div className="actions"><StatusBadge value={connected ? 'connected' : 'pending'} label={connected ? 'Connecté' : 'Connexion…'} />{host.environment === 'production' && <span className="badge warning">Hôte sensible / production</span>}<button className="secondary" onClick={onClose}>Fermer</button></div>
+      <aside className={`terminal-drawer${expanded ? ' expanded' : ''}`} onClick={(event) => event.stopPropagation()}>
+        <header className="terminal-header">
+          <div className="terminal-title">
+            <Terminal size={19} />
+            <div><p className="eyebrow">Terminal interactif</p><h2>{host.name} <span className="mono">{host.ansible_user}@{host.ip}</span></h2></div>
+          </div>
+          <div className="terminal-tools">
+            <button className="icon-button" title={copied ? 'Copié' : 'Copier la sélection'} aria-label="Copier la sélection" onClick={() => void copySelection()}>{copied ? <Check /> : <Copy />}</button>
+            <button className="icon-button" title="Effacer l’affichage" aria-label="Effacer l’affichage" onClick={() => { termRef.current?.clear(); termRef.current?.focus() }}><Trash2 /></button>
+            <button className="icon-button" title={expanded ? 'Réduire' : 'Agrandir'} aria-label={expanded ? 'Réduire' : 'Agrandir'} onClick={() => setExpanded((value) => !value)}>{expanded ? <Minimize2 /> : <Maximize2 />}</button>
+            <button className="secondary" onClick={onClose}><X /> Fermer</button>
+          </div>
+        </header>
+        <div className="terminal-meta">
+          <StatusBadge value={connected ? 'connected' : 'pending'} label={connected ? 'Connecté' : 'Connexion…'} />
+          {host.environment === 'production' && <span className="badge warning">Hôte sensible / production</span>}
+          <span className="terminal-meta-hint">Saisissez directement dans le terminal · Copiez avec la souris</span>
         </div>
-        <pre className="terminal-output" ref={outputRef}>{lines.join('')}</pre>
-        <div className="terminal-input">
-          <span className="mono">$</span>
-          <input
-            value={input}
-            autoComplete="off"
-            spellCheck={false}
-            placeholder="Commande…"
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key !== 'Enter' || socketRef.current?.readyState !== WebSocket.OPEN) return
-              socketRef.current.send(JSON.stringify({ type: 'input', data: `${input}\n` }))
-              setInput('')
-            }}
-          />
-        </div>
-        <p className="terminal-note">Session authentifiée et journalisée (utilisateur, hôte, horodatage). Aucune vérification d’empreinte SSH.</p>
+        <div className="terminal-surface" ref={surfaceRef} onClick={() => termRef.current?.focus()} />
+        <footer className="terminal-statusbar">
+          <span className={`terminal-dot${connected ? ' online' : ''}`} />
+          <span>{status}</span>
+          <span className="terminal-status-spacer" />
+          <span className="mono">{host.ansible_user}@{host.ip}</span>
+          <span>Session authentifiée et journalisée · aucune vérification d’empreinte SSH</span>
+        </footer>
       </aside>
     </div>
   )
@@ -1230,6 +1344,7 @@ function HostDetail() {
   const id = Number(hostId)
   const navigate = useNavigate()
   const client = useQueryClient()
+  const { notify } = useNotifications()
   const host = useQuery({ queryKey: ['host', id], queryFn: () => api.host(id), enabled: Number.isInteger(id) })
   const posture = useQuery({ queryKey: ['host-posture', id], queryFn: () => api.hostPosture(id), enabled: Number.isInteger(id) })
   const stack = useQuery({ queryKey: ['stack-configuration'], queryFn: api.stackConfiguration })
@@ -1261,7 +1376,7 @@ function HostDetail() {
         ['hosts'],
         ['kpis'],
         ['deployments'],
-      ])
+      ], notify, label)
       setActionTask(taskFromDeployment(label, job, deployment.id))
     } catch (cause) {
       setActionTask({ label, state: 'error', message: cause instanceof Error ? cause.message : 'Échec' })
@@ -1373,6 +1488,7 @@ function Deployments() {
   const navigate = useNavigate()
   const currentUser = useQuery({ queryKey: ['me'], queryFn: api.me })
   const canOperate = currentUser.data?.role === 'admin' || currentUser.data?.role === 'operator'
+  const { notify } = useNotifications()
   const [environment, setEnvironment] = useState('')
   const [targetHosts, setTargetHosts] = useState<string[]>([])
   const [selectedPlaybook, setSelectedPlaybook] = useState('')
@@ -1400,14 +1516,35 @@ function Deployments() {
   })
   const hosts = useQuery({ queryKey: ['hosts'], queryFn: () => api.hosts({ limit: 500 }) })
   const playbooks = useQuery({ queryKey: ['playbooks'], queryFn: api.playbooks })
-  const cancel = useMutation({ mutationFn: api.cancelDeployment, onSuccess: () => void client.invalidateQueries({ queryKey: ['deployments'] }) })
-  const retry = useMutation({ mutationFn: api.retryDeployment, onSuccess: () => void client.invalidateQueries({ queryKey: ['deployments'] }) })
+  const cancel = useMutation({
+    mutationFn: api.cancelDeployment,
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ['deployments'] })
+      notify({ tone: 'warning', title: 'Déploiement annulé' })
+    },
+    onError: (cause) => notify({ tone: 'error', title: 'Annulation impossible', message: cause instanceof Error ? cause.message : 'Erreur inconnue' }),
+  })
+  const retry = useMutation({
+    mutationFn: api.retryDeployment,
+    onSuccess: (deployment) => {
+      void client.invalidateQueries({ queryKey: ['deployments'] })
+      notify({ tone: 'info', title: 'Nouvelle tentative lancée', message: `Tâche ${deployment.id} en file.`, href: `/deployments/${deployment.id}` })
+    },
+    onError: (cause) => notify({ tone: 'error', title: 'Relance impossible', message: cause instanceof Error ? cause.message : 'Erreur inconnue' }),
+  })
   const create = useMutation({
     mutationFn: () => api.createDeployment({ environment, playbook: selectedPlaybook, hosts: targetHosts, check_mode: checkMode }),
     onSuccess: (deployment) => {
       void client.invalidateQueries({ queryKey: ['deployments'] })
+      notify({ tone: 'info', title: 'Déploiement mis en file', message: `Tâche ${deployment.id} · ${selectedPlaybook}`, href: `/deployments/${deployment.id}` })
+      void refreshAfterDeployment(client, deployment.id, [
+        ['deployments'],
+        ['kpis'],
+        ['hosts'],
+      ], notify, selectedPlaybook)
       navigate(`/deployments/${deployment.id}`)
     },
+    onError: (cause) => notify({ tone: 'error', title: 'Lancement impossible', message: cause instanceof Error ? cause.message : 'Erreur inconnue' }),
   })
   const environments = [...new Set((hosts.data ?? []).map((host) => host.environment))].sort()
   const environmentHosts = (hosts.data ?? []).filter((host) => host.environment === environment)
@@ -1547,6 +1684,7 @@ function Compliance() {
   const summary = useQuery({ queryKey: ['compliance-summary'], queryFn: api.complianceSummary })
   const client = useQueryClient()
   const navigate = useNavigate()
+  const { notify } = useNotifications()
   const [hostName, setHostName] = useState('')
   const [profile, setProfile] = useState('')
   const [scanOpen, setScanOpen] = useState(false)
@@ -1572,7 +1710,7 @@ function Compliance() {
         ['compliance-summary'],
         ['kpis'],
         ['deployments'],
-      ])
+      ], notify, label)
       setStepTask(taskFromDeployment(label, job, deployment.id))
     } catch (cause) {
       setStepTask({ label, state: 'error', message: cause instanceof Error ? cause.message : 'Échec' })
@@ -1591,7 +1729,7 @@ function Compliance() {
         ['compliance-summary'],
         ['kpis'],
         ['deployments'],
-      ])
+      ], notify, 'Audit OpenSCAP')
       navigate(`/deployments/${deployment.id}`)
     },
     onError: (cause) => setLaunchError(cause instanceof Error ? cause.message : 'Lancement impossible'),
@@ -1663,6 +1801,7 @@ function Compliance() {
 
 function Patching() {
   const client = useQueryClient()
+  const { notify } = useNotifications()
   const { data = [], isLoading, error } = useQuery({ queryKey: ['patch-findings'], queryFn: api.patchFindings })
   const hosts = useQuery({ queryKey: ['hosts'], queryFn: () => api.hosts({ limit: 500 }) })
   const kpis = useQuery({ queryKey: ['kpis'], queryFn: api.kpis, refetchInterval: 30_000 })
@@ -1676,8 +1815,22 @@ function Patching() {
     client.invalidateQueries({ queryKey: ['kpis'] }),
     client.invalidateQueries({ queryKey: ['deployments'] }),
   ])
-  const syncWazuh = useMutation({ mutationFn: api.syncWazuhPatches, onSuccess: () => void refreshQueries() })
-  const resolve = useMutation({ mutationFn: api.resolvePatch, onSuccess: () => void refreshQueries() })
+  const syncWazuh = useMutation({
+    mutationFn: api.syncWazuhPatches,
+    onSuccess: (result) => {
+      void refreshQueries()
+      notify({ tone: 'info', title: 'Synchronisation Wazuh terminée', message: `${formatNumber(Number(result.updated ?? result.created ?? 0))} finding(s) mis à jour.` })
+    },
+    onError: (cause) => notify({ tone: 'error', title: 'Synchronisation Wazuh impossible', message: cause instanceof Error ? cause.message : 'Erreur inconnue' }),
+  })
+  const resolve = useMutation({
+    mutationFn: api.resolvePatch,
+    onSuccess: () => {
+      void refreshQueries()
+      notify({ tone: 'success', title: 'Correctif marqué comme résolu' })
+    },
+    onError: (cause) => notify({ tone: 'error', title: 'Mise à jour impossible', message: cause instanceof Error ? cause.message : 'Erreur inconnue' }),
+  })
   const patchAction = async (playbook: string, label: string, extraVars: Record<string, string> = {}) => {
     if (patchBusy) return
     const target = (hosts.data ?? []).find((host) => host.name === hostName)
@@ -1692,7 +1845,7 @@ function Patching() {
         ['patch-findings'],
         ['kpis'],
         ['deployments'],
-      ])
+      ], notify, label)
       setPatchTask(taskFromDeployment(label, job, deployment.id))
     } catch (cause) {
       setPatchTask({ label, state: 'error', message: cause instanceof Error ? cause.message : 'Échec' })
@@ -1812,6 +1965,7 @@ function Patching() {
 
 function Detection() {
   const client = useQueryClient()
+  const { notify } = useNotifications()
   const { data = [], isLoading, error } = useQuery({
     queryKey: ['alerts'],
     queryFn: api.alerts,
@@ -1825,9 +1979,35 @@ function Detection() {
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
   })
-  const sync = useMutation({ mutationFn: api.syncAllWazuh, onSuccess: () => { void client.invalidateQueries({ queryKey: ['alerts'] }); void client.invalidateQueries({ queryKey: ['patch-findings'] }); void client.invalidateQueries({ queryKey: ['alert-summary'] }) } })
-  const ack = useMutation({ mutationFn: api.acknowledgeAlert, onSuccess: () => { void client.invalidateQueries({ queryKey: ['alerts'] }); void client.invalidateQueries({ queryKey: ['alert-summary'] }) } })
-  const response = useMutation({ mutationFn: ({ id, action }: { id: number; action: 'firewall-drop' | 'disable-account' }) => api.activeResponse(id, action), onSuccess: () => { void client.invalidateQueries({ queryKey: ['alerts'] }); void client.invalidateQueries({ queryKey: ['alert-summary'] }) } })
+  const refreshDetection = () => {
+    void client.invalidateQueries({ queryKey: ['alerts'] })
+    void client.invalidateQueries({ queryKey: ['patch-findings'] })
+    void client.invalidateQueries({ queryKey: ['alert-summary'] })
+  }
+  const sync = useMutation({
+    mutationFn: api.syncAllWazuh,
+    onSuccess: () => {
+      refreshDetection()
+      notify({ tone: 'info', title: 'Synchronisation Wazuh terminée', message: 'Alertes et correctifs rafraîchis.' })
+    },
+    onError: (cause) => notify({ tone: 'error', title: 'Synchronisation impossible', message: cause instanceof Error ? cause.message : 'Erreur inconnue' }),
+  })
+  const ack = useMutation({
+    mutationFn: api.acknowledgeAlert,
+    onSuccess: () => {
+      refreshDetection()
+      notify({ tone: 'success', title: 'Alerte acquittée' })
+    },
+    onError: (cause) => notify({ tone: 'error', title: 'Acquittement impossible', message: cause instanceof Error ? cause.message : 'Erreur inconnue' }),
+  })
+  const response = useMutation({
+    mutationFn: ({ id, action }: { id: number; action: 'firewall-drop' | 'disable-account' }) => api.activeResponse(id, action),
+    onSuccess: (_result, variables) => {
+      refreshDetection()
+      notify({ tone: 'warning', title: 'Réponse active envoyée', message: variables.action === 'firewall-drop' ? 'Blocage IP demandé.' : 'Compte désactivé.' })
+    },
+    onError: (cause) => notify({ tone: 'error', title: 'Réponse active impossible', message: cause instanceof Error ? cause.message : 'Erreur inconnue' }),
+  })
   const [severity, setSeverity] = useState<'all' | 'critical' | 'high' | 'medium' | 'low'>('all')
   if (isLoading) return <Loading label="Chargement des alertes…" />
   if (error) return <div className="alert error">Impossible de charger les alertes.</div>
@@ -1923,6 +2103,7 @@ function PlaybookEditor({ creating, selected, playbook, canEdit, onSaved }: {
   onSaved: (saved: PlaybookDetail) => void
 }) {
   const client = useQueryClient()
+  const { notify } = useNotifications()
   const [filename, setFilename] = useState(playbook?.filename ?? '')
   const [description, setDescription] = useState(playbook?.description ?? '')
   const [content, setContent] = useState(playbook?.content ?? '')
@@ -1930,7 +2111,15 @@ function PlaybookEditor({ creating, selected, playbook, canEdit, onSaved }: {
 
   const validate = useMutation({
     mutationFn: () => api.validatePlaybook(content),
-    onSuccess: setValidation,
+    onSuccess: (result) => {
+      setValidation(result)
+      notify({
+        tone: result.valid ? 'success' : 'error',
+        title: result.valid ? 'YAML valide' : 'YAML invalide',
+        message: result.detail,
+      })
+    },
+    onError: (cause) => notify({ tone: 'error', title: 'Validation impossible', message: cause instanceof Error ? cause.message : 'Erreur inconnue' }),
   })
   const save = useMutation({
     mutationFn: async () => {
@@ -1945,7 +2134,9 @@ function PlaybookEditor({ creating, selected, playbook, canEdit, onSaved }: {
       void client.invalidateQueries({ queryKey: ['playbooks'] })
       void client.setQueryData(['playbook', saved.filename], saved)
       onSaved(saved)
+      notify({ tone: 'success', title: 'Playbook enregistré', message: saved.filename })
     },
+    onError: (cause) => notify({ tone: 'error', title: 'Enregistrement impossible', message: cause instanceof Error ? cause.message : 'Erreur inconnue' }),
   })
 
   const resetFeedback = () => {
@@ -1976,6 +2167,7 @@ function PlaybookEditor({ creating, selected, playbook, canEdit, onSaved }: {
 
 function Playbooks() {
   const client = useQueryClient()
+  const { notify } = useNotifications()
   const list = useQuery({ queryKey: ['playbooks'], queryFn: api.playbooks })
   const currentUser = useQuery({ queryKey: ['me'], queryFn: api.me })
   const canEdit = currentUser.data?.role === 'admin' || currentUser.data?.role === 'operator'
@@ -1988,12 +2180,14 @@ function Playbooks() {
   })
   const remove = useMutation({
     mutationFn: api.deletePlaybook,
-    onSuccess: () => {
+    onSuccess: (_result, filename) => {
       setSelected('')
       setCreating(false)
       void client.invalidateQueries({ queryKey: ['playbooks'] })
       void client.invalidateQueries({ queryKey: ['playbook'] })
+      notify({ tone: 'warning', title: 'Playbook supprimé', message: filename })
     },
+    onError: (cause) => notify({ tone: 'error', title: 'Suppression impossible', message: cause instanceof Error ? cause.message : 'Erreur inconnue' }),
   })
 
   const startNew = () => {
@@ -2067,6 +2261,7 @@ function useIntegrationTest(
 
 function StackConfigurationEditor({ onSaved }: { onSaved: () => Promise<void> }) {
   const client = useQueryClient()
+  const { notify } = useNotifications()
   const configuration = useQuery({
     queryKey: ['integration-config'],
     queryFn: api.stackConfiguration,
@@ -2080,7 +2275,9 @@ function StackConfigurationEditor({ onSaved }: { onSaved: () => Promise<void> })
       client.setQueryData(['integration-config'], updated)
       setEdited(updated)
       void onSaved()
+      notify({ tone: 'success', title: 'Configuration enregistrée', message: 'Les nouvelles valeurs sont appliquées.' })
     },
+    onError: (cause) => notify({ tone: 'error', title: 'Enregistrement impossible', message: cause instanceof Error ? cause.message : 'Erreur inconnue' }),
   })
   const reset = useMutation({
     mutationFn: api.resetStackConfiguration,
@@ -2088,7 +2285,9 @@ function StackConfigurationEditor({ onSaved }: { onSaved: () => Promise<void> })
       client.setQueryData(['integration-config'], updated)
       setEdited(updated)
       void onSaved()
+      notify({ tone: 'info', title: 'Configuration restaurée', message: 'Valeurs reloadées depuis .env.' })
     },
+    onError: (cause) => notify({ tone: 'error', title: 'Restauration impossible', message: cause instanceof Error ? cause.message : 'Erreur inconnue' }),
   })
   const update = <K extends keyof StackConfiguration>(key: K, value: StackConfiguration[K]) => {
     if (form) {
@@ -2141,6 +2340,7 @@ function StackConfigurationEditor({ onSaved }: { onSaved: () => Promise<void> })
 }
 
 function Profile() {
+  const { notify } = useNotifications()
   const me = useQuery({ queryKey: ['me'], queryFn: api.me, retry: false })
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
@@ -2155,7 +2355,9 @@ function Profile() {
       setConfirmation('')
       setFormError('')
       setChanged(true)
+      notify({ tone: 'success', title: 'Mot de passe modifié', message: 'Les autres sessions ont été déconnectées.' })
     },
+    onError: (cause) => notify({ tone: 'error', title: 'Modification impossible', message: cause instanceof Error ? cause.message : 'Erreur inconnue' }),
   })
 
   return (
@@ -2369,6 +2571,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
   const me = useQuery({ queryKey: ['me'], queryFn: api.me, retry: false })
   const location = useLocation()
   const label = currentNavLabel(location.pathname)
+  const [searchOpen, setSearchOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try {
       return window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === 'true'
@@ -2377,6 +2580,16 @@ function Shell({ onLogout }: { onLogout: () => void }) {
     }
   })
   useEffect(() => { window.scrollTo(0, 0) }, [location.pathname])
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        setSearchOpen(true)
+      }
+    }
+    window.addEventListener('keydown', handleShortcut)
+    return () => window.removeEventListener('keydown', handleShortcut)
+  }, [])
   useEffect(() => {
     try {
       window.localStorage.setItem(SIDEBAR_STORAGE_KEY, String(sidebarCollapsed))
@@ -2429,12 +2642,12 @@ function Shell({ onLogout }: { onLogout: () => void }) {
             <div className="breadcrumb"><span className="crumb-root">LinSec360</span><ChevronRight /><strong>{label}</strong></div>
           </div>
           <div className="topbar-right">
-            <div className="search">
+            <button className="search-trigger" aria-label="Ouvrir la recherche globale" onClick={() => setSearchOpen(true)}>
               <Search />
-              <input aria-label="Recherche" placeholder="Rechercher un hôte, un playbook…" />
+              <span>Rechercher un hôte, un playbook…</span>
               <kbd>⌘K</kbd>
-            </div>
-            <button className="icon-button" aria-label="Notifications"><Bell /><span className="notif-dot" /></button>
+            </button>
+            <NotificationMenu />
             <div className="user-chip">
               <span className="avatar">{initials(me.data?.username ?? 'Session')}</span>
               <div className="user-meta"><strong>{me.data?.username ?? 'Session'}</strong><span>{role}</span></div>
@@ -2459,6 +2672,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
           </Routes>
         </div>
       </main>
+      <CommandPalette key={searchOpen ? 'search-open' : 'search-closed'} open={searchOpen} onClose={() => setSearchOpen(false)} />
     </div>
   )
 }
@@ -2467,14 +2681,16 @@ function App() {
   const [authenticated, setAuthenticated] = useState(false)
   const me = useQuery({ queryKey: ['me'], queryFn: api.me, retry: false, enabled: !authenticated })
   const client = useQueryClient()
+  const { notify } = useNotifications()
   useEffect(() => {
     const handleUnauthorized = () => {
       client.clear()
       setAuthenticated(false)
+      notify({ tone: 'warning', title: 'Session expirée', message: 'Reconnectez-vous pour continuer.' })
     }
     window.addEventListener('linsec:unauthorized', handleUnauthorized)
     return () => window.removeEventListener('linsec:unauthorized', handleUnauthorized)
-  }, [client])
+  }, [client, notify])
   if (!authenticated && me.isLoading) return <div className="login-page"><div className="loading"><span className="spinner" />Vérification de la session…</div></div>
   if (!authenticated && me.isError) return <Login onLogin={() => { setAuthenticated(true); void client.invalidateQueries() }} />
   const logout = async () => {

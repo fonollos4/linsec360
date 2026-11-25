@@ -7,6 +7,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 API_TS = ROOT / "web" / "src" / "api.ts"
 APP_TSX = ROOT / "web" / "src" / "App.tsx"
+MAIN_TSX = ROOT / "web" / "src" / "main.tsx"
+COMMAND_TSX = ROOT / "web" / "src" / "command-palette.tsx"
+NOTIFICATIONS_TSX = ROOT / "web" / "src" / "notifications.tsx"
 INDEX_CSS = ROOT / "web" / "src" / "index.css"
 NGINX_LOCATIONS = ROOT / "web" / "snippets" / "linsec-locations.conf"
 
@@ -109,6 +112,49 @@ def test_playbook_editor_opens_beside_the_library() -> None:
     assert 'className="playbook-editor-area"' in source
     assert ".playbook-workspace" in css
     assert ".playbook-editor-area" in css
+
+
+def test_terminal_uses_a_real_terminal_emulator() -> None:
+    source = APP_TSX.read_text(encoding="utf-8")
+
+    assert "@xterm/xterm" in source
+    assert "@xterm/addon-fit" in source
+    assert "new XTerm(" in source
+    assert "term.onData" in source
+    assert "fitAddon.fit()" in source
+    assert "type: 'input'" in source
+    assert "type: 'resize'" in source
+
+
+def test_global_search_is_a_real_command_palette() -> None:
+    app_source = APP_TSX.read_text(encoding="utf-8")
+    palette_source = COMMAND_TSX.read_text(encoding="utf-8")
+    css = INDEX_CSS.read_text(encoding="utf-8")
+
+    assert "search-trigger" in app_source
+    assert "CommandPalette" in app_source
+    assert "event.metaKey || event.ctrlKey" in app_source
+    assert "api.hosts" in palette_source
+    assert "api.playbooks" in palette_source
+    assert "api.deployments" in palette_source
+    assert ".command-palette" in css
+
+
+def test_notifications_are_colored_toasts_with_history() -> None:
+    main_source = MAIN_TSX.read_text(encoding="utf-8")
+    notification_source = NOTIFICATIONS_TSX.read_text(encoding="utf-8")
+    app_source = APP_TSX.read_text(encoding="utf-8")
+    css = INDEX_CSS.read_text(encoding="utf-8")
+
+    assert "NotificationProvider" in main_source
+    assert "NotificationMenu" in app_source
+    assert "'alert' : 'status'" in notification_source
+    assert "notification-stack" in css
+    assert ".notification-toast.tone-success" in css
+    assert ".notification-toast.tone-error" in css
+    assert ".notification-toast.tone-warning" in css
+    assert ".notification-toast.tone-info" in css
+    assert "notify(" in app_source
 
 
 def test_patch_actions_explain_and_track_their_deployments() -> None:
