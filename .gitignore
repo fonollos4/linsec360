@@ -22,8 +22,12 @@ Pipfile.lock
 .venv/
 venv/
 config/wazuh/generated/
+config/wazuh/generated-development/
 config/wazuh/indexer_ssl_certs/
+config/wazuh/indexer_ssl_certs-development/
+config/tls/**/*.pem
 config/tls/*.pem
+config/tls-development/*.pem
 molecule/**/es_certs/
 molecule/**/opendistro/
 .ssh/

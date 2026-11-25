@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Initialize missing Wazuh secrets in the repository .env file."""
+"""Initialize missing secrets in a LinSec360 .env file."""
 
 from pathlib import Path
+import argparse
 import secrets
+import string
 
 try:
     import bcrypt
@@ -22,8 +24,20 @@ PASSWORD_KEYS = (
     "WAZUH_API_PASSWORD",
 )
 
+# Wazuh rejects passwords without lower/upper/digit/special characters. The
+# special set avoids shell/dotenv delimiters such as quotes and backslashes.
+SPECIAL_CHARACTERS = "!@#%^&*-_=+?"
+PASSWORD_ALPHABETS = (
+    string.ascii_lowercase,
+    string.ascii_uppercase,
+    string.digits,
+    SPECIAL_CHARACTERS,
+)
+PASSWORD_LENGTH = 24
+
 RANDOM_SECRET_KEYS = (
     "LINSEC_SECRET_KEY",
+    "LINSEC_CREDENTIAL_ENCRYPTION_KEY",
     "LINSEC_BOOTSTRAP_ADMIN_PASSWORD",
     "POSTGRES_PASSWORD",
 )
@@ -59,26 +73,52 @@ def write_env_value(path: Path, key: str, value: str) -> None:
     path.chmod(0o600)
 
 
+def is_secure_wazuh_password(value: str) -> bool:
+    return (
+        8 <= len(value) <= 64
+        and any(char in string.ascii_lowercase for char in value)
+        and any(char in string.ascii_uppercase for char in value)
+        and any(char in string.digits for char in value)
+        and any(char in SPECIAL_CHARACTERS for char in value)
+    )
+
+
+def generate_wazuh_password() -> str:
+    random = secrets.SystemRandom()
+    characters = [random.choice(alphabet) for alphabet in PASSWORD_ALPHABETS]
+    all_characters = "".join(PASSWORD_ALPHABETS)
+    characters.extend(
+        random.choice(all_characters)
+        for _ in range(PASSWORD_LENGTH - len(characters))
+    )
+    random.shuffle(characters)
+    return "".join(characters)
+
+
 def initialize(path: Path = ENV_PATH) -> list[str]:
     values = read_env(path)
     initialized: list[str] = []
 
     for key in RANDOM_SECRET_KEYS:
         if not values.get(key):
-            value = (
-                secrets.token_hex(32)
-                if key == "LINSEC_SECRET_KEY"
-                else secrets.token_urlsafe(24)
-            )
+            if key == "LINSEC_SECRET_KEY":
+                value = secrets.token_hex(32)
+            elif key == "LINSEC_CREDENTIAL_ENCRYPTION_KEY":
+                # Fernet expects 32 url-safe base64 encoded random bytes.
+                value = secrets.token_urlsafe(32)
+            else:
+                value = secrets.token_urlsafe(24)
             write_env_value(path, key, value)
             values[key] = value
             initialized.append(key)
 
+    regenerated: set[str] = set()
     for key in PASSWORD_KEYS:
-        if not values.get(key):
-            value = secrets.token_urlsafe(24)
+        if not values.get(key) or not is_secure_wazuh_password(values[key]):
+            value = generate_wazuh_password()
             write_env_value(path, key, value)
             values[key] = value
+            regenerated.add(key)
             initialized.append(key)
 
     if not values.get("WAZUH_API_USERNAME"):
@@ -89,7 +129,7 @@ def initialize(path: Path = ENV_PATH) -> list[str]:
         ("WAZUH_ADMIN_PASSWORD", "WAZUH_ADMIN_PASSWORD_HASH"),
         ("WAZUH_DASHBOARD_PASSWORD", "WAZUH_DASHBOARD_PASSWORD_HASH"),
     ):
-        if not values.get(hash_key):
+        if not values.get(hash_key) or password_key in regenerated:
             password = values[password_key].encode("utf-8")
             password_hash = bcrypt.hashpw(password, bcrypt.gensalt(rounds=12)).decode()
             write_env_value(path, hash_key, password_hash)
@@ -98,5 +138,18 @@ def initialize(path: Path = ENV_PATH) -> list[str]:
     return initialized
 
 
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--env-file",
+        type=Path,
+        default=ENV_PATH,
+        help=f"environment file to initialize (default: {ENV_PATH})",
+    )
+    args = parser.parse_args()
+    initialized = initialize(args.env_file)
+    print("Initialized: " + (", ".join(initialized) if initialized else "nothing"))
+
+
 if __name__ == "__main__":
-    print("Initialized: " + ", ".join(initialize()))
+    main()

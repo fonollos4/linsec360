@@ -30,7 +30,7 @@ def resolve_addresses(hostname: str | None) -> list[str]:
         results = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
     except OSError:
         return []
-    return sorted({result[4][0] for result in results})
+    return sorted({str(result[4][0]) for result in results})
 
 
 def _url_details(value: str) -> tuple[str | None, str | None]:

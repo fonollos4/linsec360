@@ -5,5 +5,5 @@ services:
     image: wazuh/wazuh-certs-generator:0.0.2
     hostname: wazuh-certs-generator
     volumes:
-      - ./config/wazuh/indexer_ssl_certs/:/certificates/
+      - ${LINSEC_WAZUH_CERT_DIR:-./config/wazuh/indexer_ssl_certs}/:/certificates/
       - ./config/wazuh/certs.yml:/config/certs.yml

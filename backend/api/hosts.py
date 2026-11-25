@@ -17,6 +17,7 @@ from ..schemas import (
     HardeningCheckOut,
     HostConnectionTestRequest,
     HostCreate,
+    HostImportFailure,
     HostImportOut,
     HostImportRequest,
     HostOut,
@@ -370,7 +371,9 @@ def import_hosts(
             )
         except ConflictError as exc:
             failed.append(
-                {"row": row, "name": host_payload.name, "detail": exc.message}
+                HostImportFailure(
+                    row=row, name=host_payload.name, detail=exc.message
+                )
             )
         else:
             imported.append(host_service.serialize(host))

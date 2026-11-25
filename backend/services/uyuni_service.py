@@ -72,6 +72,7 @@ class UyuniClient:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
         self._http: httpx.Client | None = None
+        self._session: str | None = None
 
     @property
     def configured(self) -> bool:
@@ -133,7 +134,7 @@ class UyuniClient:
 
     @property
     def _session_key(self) -> str:
-        if hasattr(self, "_session"):
+        if self._session is not None:
             return self._session
         session = self._call("auth.login")
         if not isinstance(session, str) and not isinstance(session, int):

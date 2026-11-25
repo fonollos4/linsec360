@@ -8,6 +8,7 @@ pre-provisioned account/key pair.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import fcntl
 import json
 import os
@@ -140,23 +141,19 @@ async def host_terminal(
             if kind == "input":
                 data = message.get("data", "")
                 if isinstance(data, str) and process.poll() is None:
-                    try:
+                    with contextlib.suppress(OSError):
                         os.write(master_fd, data.encode("utf-8"))
-                    except OSError:
-                        pass
             elif kind == "resize":
                 rows = int(message.get("rows", 24))
                 cols = int(message.get("cols", 80))
                 rows = max(1, min(rows, 200))
                 cols = max(1, min(cols, 400))
-                try:
+                with contextlib.suppress(OSError):
                     fcntl.ioctl(
                         master_fd,
                         termios.TIOCSWINSZ,
                         struct.pack("HHHH", rows, cols, 0, 0),
                     )
-                except OSError:
-                    pass
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:

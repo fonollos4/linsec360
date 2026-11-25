@@ -65,8 +65,6 @@ services:
   wazuh-config:
     image: python:3.13-alpine
     restart: "no"
-    env_file:
-      - .env
     environment:
       WAZUH_ADMIN_PASSWORD: ${WAZUH_ADMIN_PASSWORD:-}
       WAZUH_ADMIN_PASSWORD_HASH: ${WAZUH_ADMIN_PASSWORD_HASH:-}
@@ -76,7 +74,7 @@ services:
       WAZUH_API_PASSWORD: ${WAZUH_API_PASSWORD:-}
     volumes:
       - ./:/workspace:ro
-      - ./config/wazuh/generated:/workspace/config/wazuh/generated:rw
+      - ${LINSEC_WAZUH_GENERATED_DIR:-./config/wazuh/generated}:/workspace/config/wazuh/generated:rw
     working_dir: /workspace
     command: ["python", "config/scripts/render-wazuh-config.py"]
 
@@ -105,8 +103,8 @@ services:
     volumes:
       - wazuh_api_configuration:/var/ossec/api/configuration
       - ./config/wazuh/api.yaml:/var/ossec/api/configuration/api.yaml:ro
-      - ./config/wazuh/indexer_ssl_certs/wazuh.manager.pem:/var/ossec/api/configuration/ssl/server.crt:ro
-      - ./config/wazuh/indexer_ssl_certs/wazuh.manager-key.pem:/var/ossec/api/configuration/ssl/server.key:ro
+      - ${LINSEC_WAZUH_CERT_DIR:-./config/wazuh/indexer_ssl_certs}/wazuh.manager.pem:/var/ossec/api/configuration/ssl/server.crt:ro
+      - ${LINSEC_WAZUH_CERT_DIR:-./config/wazuh/indexer_ssl_certs}/wazuh.manager-key.pem:/var/ossec/api/configuration/ssl/server.key:ro
       - wazuh_etc:/var/ossec/etc
       - wazuh_logs:/var/ossec/logs
       - wazuh_queue:/var/ossec/queue
@@ -115,11 +113,10 @@ services:
       - wazuh_active_response:/var/ossec/active-response/bin
       - wazuh_agentless:/var/ossec/agentless
       - wazuh_wodles:/var/ossec/wodles
-      - filebeat_etc:/etc/filebeat
       - filebeat_var:/var/lib/filebeat
-      - ./config/wazuh/indexer_ssl_certs/root-ca-manager.pem:/etc/ssl/root-ca.pem:ro
-      - ./config/wazuh/indexer_ssl_certs/wazuh.manager.pem:/etc/ssl/filebeat.pem:ro
-      - ./config/wazuh/indexer_ssl_certs/wazuh.manager-key.pem:/etc/ssl/filebeat.key:ro
+      - ${LINSEC_WAZUH_CERT_DIR:-./config/wazuh/indexer_ssl_certs}/root-ca-manager.pem:/etc/ssl/root-ca.pem:ro
+      - ${LINSEC_WAZUH_CERT_DIR:-./config/wazuh/indexer_ssl_certs}/wazuh.manager.pem:/etc/ssl/filebeat.pem:ro
+      - ${LINSEC_WAZUH_CERT_DIR:-./config/wazuh/indexer_ssl_certs}/wazuh.manager-key.pem:/etc/ssl/filebeat.key:ro
       - ./config/wazuh/cluster/wazuh_manager.conf:/wazuh-config-mount/etc/ossec.conf:ro
     depends_on:
       wazuh.indexer:
@@ -144,13 +141,13 @@ services:
       nofile: { soft: 65536, hard: 65536 }
     volumes:
       - wazuh-indexer-data:/var/lib/wazuh-indexer
-      - ./config/wazuh/indexer_ssl_certs/root-ca.pem:/usr/share/wazuh-indexer/certs/root-ca.pem:ro
-      - ./config/wazuh/indexer_ssl_certs/wazuh.indexer-key.pem:/usr/share/wazuh-indexer/certs/wazuh.indexer.key:ro
-      - ./config/wazuh/indexer_ssl_certs/wazuh.indexer.pem:/usr/share/wazuh-indexer/certs/wazuh.indexer.pem:ro
-      - ./config/wazuh/indexer_ssl_certs/admin.pem:/usr/share/wazuh-indexer/certs/admin.pem:ro
-      - ./config/wazuh/indexer_ssl_certs/admin-key.pem:/usr/share/wazuh-indexer/certs/admin-key.pem:ro
+      - ${LINSEC_WAZUH_CERT_DIR:-./config/wazuh/indexer_ssl_certs}/root-ca.pem:/usr/share/wazuh-indexer/certs/root-ca.pem:ro
+      - ${LINSEC_WAZUH_CERT_DIR:-./config/wazuh/indexer_ssl_certs}/wazuh.indexer-key.pem:/usr/share/wazuh-indexer/certs/wazuh.indexer.key:ro
+      - ${LINSEC_WAZUH_CERT_DIR:-./config/wazuh/indexer_ssl_certs}/wazuh.indexer.pem:/usr/share/wazuh-indexer/certs/wazuh.indexer.pem:ro
+      - ${LINSEC_WAZUH_CERT_DIR:-./config/wazuh/indexer_ssl_certs}/admin.pem:/usr/share/wazuh-indexer/certs/admin.pem:ro
+      - ${LINSEC_WAZUH_CERT_DIR:-./config/wazuh/indexer_ssl_certs}/admin-key.pem:/usr/share/wazuh-indexer/certs/admin-key.pem:ro
       - ./config/wazuh/indexer/wazuh.indexer.yml:/usr/share/wazuh-indexer/opensearch.yml:ro
-      - ./config/wazuh/generated/internal_users.yml:/usr/share/wazuh-indexer/opensearch-security/internal_users.yml:ro
+      - ${LINSEC_WAZUH_GENERATED_DIR:-./config/wazuh/generated}/internal_users.yml:/usr/share/wazuh-indexer/opensearch-security/internal_users.yml:ro
     depends_on:
       wazuh-config:
         condition: service_completed_successfully
@@ -176,11 +173,11 @@ services:
       API_USERNAME: ${WAZUH_API_USERNAME:?Set WAZUH_API_USERNAME in .env}
       API_PASSWORD: ${WAZUH_API_PASSWORD:?Set WAZUH_API_PASSWORD in .env}
     volumes:
-      - ./config/wazuh/indexer_ssl_certs/wazuh.dashboard.pem:/usr/share/wazuh-dashboard/certs/wazuh-dashboard.pem:ro
-      - ./config/wazuh/indexer_ssl_certs/wazuh.dashboard-key.pem:/usr/share/wazuh-dashboard/certs/wazuh-dashboard-key.pem:ro
-      - ./config/wazuh/indexer_ssl_certs/root-ca.pem:/usr/share/wazuh-dashboard/certs/root-ca.pem:ro
+      - ${LINSEC_WAZUH_CERT_DIR:-./config/wazuh/indexer_ssl_certs}/wazuh.dashboard.pem:/usr/share/wazuh-dashboard/certs/wazuh-dashboard.pem:ro
+      - ${LINSEC_WAZUH_CERT_DIR:-./config/wazuh/indexer_ssl_certs}/wazuh.dashboard-key.pem:/usr/share/wazuh-dashboard/certs/wazuh-dashboard-key.pem:ro
+      - ${LINSEC_WAZUH_CERT_DIR:-./config/wazuh/indexer_ssl_certs}/root-ca.pem:/usr/share/wazuh-dashboard/certs/root-ca.pem:ro
       - ./config/wazuh/dashboard/opensearch_dashboards.yml:/usr/share/wazuh-dashboard/config/opensearch_dashboards.yml:ro
-      - ./config/wazuh/generated/wazuh.yml:/usr/share/wazuh-dashboard/data/wazuh/config/wazuh.yml:ro
+      - ${LINSEC_WAZUH_GENERATED_DIR:-./config/wazuh/generated}/wazuh.yml:/usr/share/wazuh-dashboard/data/wazuh/config/wazuh.yml:ro
       - wazuh-dashboard-config:/usr/share/wazuh-dashboard/data/wazuh/config
       - wazuh-dashboard-custom:/usr/share/wazuh-dashboard/plugins/wazuh/public/assets/custom
     depends_on:
@@ -210,7 +207,7 @@ services:
       LINSEC_TLS_ENABLED: ${LINSEC_TLS_ENABLED:-false}
       LINSEC_HTTPS_PORT: ${LINSEC_HTTPS_PORT:-8444}
     volumes:
-      - ./config/tls:/etc/nginx/certs:ro
+      - ${LINSEC_TLS_DIR:-./config/tls}:/etc/nginx/certs:ro
     depends_on:
       api:
         condition: service_healthy
@@ -260,7 +257,7 @@ services:
     environment: *backend-environment
     volumes: *backend-volumes
     ports:
-      - "127.0.0.1:${LINSEC_API_PORT:-8080}:8000"
+      - "${LINSEC_BIND_ADDRESS:-0.0.0.0}:${LINSEC_API_PORT:-8080}:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -305,7 +302,7 @@ networks:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.30.0.0/16
+        - subnet: ${LINSEC_DOCKER_SUBNET:-172.30.0.0/16}
 
 volumes:
   linsec_postgres:
@@ -321,7 +318,6 @@ volumes:
   wazuh_active_response:
   wazuh_agentless:
   wazuh_wodles:
-  filebeat_etc:
   filebeat_var:
   wazuh-indexer-data:
   wazuh-dashboard-config:

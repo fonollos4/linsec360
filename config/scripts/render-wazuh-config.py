@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import re
@@ -10,10 +11,11 @@ HASH_PATTERN = re.compile(r"\$2[aby]\$(?:1[0-6]|0[4-9])\$[./A-Za-z0-9]{53}\Z")
 USERNAME_PATTERN = re.compile(r"[A-Za-z0-9_.-]{1,64}\Z")
 
 
-def render_config(root, environment=None):
+def render_config(root, environment=None, env_file=None, output_dir=None):
     root = Path(root)
     if environment is None:
-        environment = {**_read_env_file(root / ".env"), **os.environ}
+        env_path = Path(env_file) if env_file is not None else root / ".env"
+        environment = {**_read_env_file(env_path), **os.environ}
     required = (
         "WAZUH_ADMIN_PASSWORD",
         "WAZUH_ADMIN_PASSWORD_HASH",
@@ -32,7 +34,11 @@ def render_config(root, environment=None):
         raise ValueError("WAZUH_API_USERNAME contains unsupported characters")
 
     wazuh_dir = root / "config" / "wazuh"
-    generated_dir = wazuh_dir / "generated"
+    generated_dir = (
+        Path(output_dir) if output_dir is not None else wazuh_dir / "generated"
+    )
+    if generated_dir.is_symlink():
+        raise ValueError("generated Wazuh configuration directory must not be a symlink")
     generated_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
     os.chmod(generated_dir, 0o700)
 
@@ -90,6 +96,8 @@ def _read_env_file(path):
 
 
 def _write_private_file(path, content):
+    if path.is_symlink():
+        raise ValueError(f"refusing to write through a symbolic link: {path}")
     descriptor, temporary_path = tempfile.mkstemp(
         prefix=f".{path.name}-",
         dir=path.parent,
@@ -109,6 +117,27 @@ def _write_private_file(path, content):
         raise
 
 
-if __name__ == "__main__":
-    render_config(Path(__file__).resolve().parents[2])
+def main() -> None:
+    root = Path(__file__).resolve().parents[2]
+    parser = argparse.ArgumentParser(description="Render private Wazuh configuration")
+    parser.add_argument(
+        "--env-file",
+        type=Path,
+        help="dotenv file to read (default: <repository>/.env)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="directory for generated files (default: <repository>/config/wazuh/generated)",
+    )
+    args = parser.parse_args()
+    render_config(
+        root,
+        env_file=args.env_file,
+        output_dir=args.output_dir,
+    )
     print("Generated private Wazuh runtime configuration.")
+
+
+if __name__ == "__main__":
+    main()

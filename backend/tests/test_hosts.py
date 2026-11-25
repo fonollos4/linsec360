@@ -854,7 +854,9 @@ def test_ssh_key_reference_is_persisted_and_exported_to_inventory(
 def test_terminal_websocket_requires_authentication(client: TestClient):
     from starlette.websockets import WebSocketDisconnect
 
-    with pytest.raises(WebSocketDisconnect) as caught:
-        with client.websocket_connect("/api/v1/hosts/1/terminal/ws"):
-            pass
+    with (
+        pytest.raises(WebSocketDisconnect) as caught,
+        client.websocket_connect("/api/v1/hosts/1/terminal/ws"),
+    ):
+        pass
     assert caught.value.code == 4401
