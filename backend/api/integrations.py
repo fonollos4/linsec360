@@ -16,6 +16,8 @@ from ..errors import IntegrationNotConfigured, IntegrationUnavailable
 from ..schemas import (
     IntegrationState,
     IntegrationStatus,
+    NativeToolSecretState,
+    NativeToolSecretUpdate,
     StackConfiguration,
     StackConfigurationUpdate,
 )
@@ -23,6 +25,7 @@ from ..security import get_current_user, require_roles
 from ..services import (
     audit_service,
     kpi_service,
+    native_tool_secret_service,
     runtime_configuration_service,
     stack_service,
     uyuni_service,
@@ -219,6 +222,42 @@ def test_ansible(
     return IntegrationState(
         configured=True, available=True, reachable=True, detail=version[:200]
     )
+
+
+@router.get("/native-secrets", response_model=NativeToolSecretState)
+def native_secrets_status(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+) -> NativeToolSecretState:
+    """Report which native-tool tokens are configured, never their values."""
+    return NativeToolSecretState.model_validate(
+        native_tool_secret_service.catalog(db)
+    )
+
+
+@router.put("/native-secrets", response_model=NativeToolSecretState)
+def update_native_secrets(
+    payload: NativeToolSecretUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(require_roles("admin")),
+) -> NativeToolSecretState:
+    """Store encrypted tokens for Ubuntu Pro / Canonical livepatch."""
+    result = native_tool_secret_service.update(
+        db, secrets=payload.secrets, actor=user
+    )
+    audit_service.record(
+        db,
+        actor=user,
+        action="integrations.native_secrets.update",
+        target_type="integration",
+        target_id="native-tools",
+        # Only key names are audited; values must never reach the log.
+        data={"keys": sorted(payload.secrets)},
+        request=request,
+    )
+    db.commit()
+    return NativeToolSecretState.model_validate(result)
 
 
 @router.post("/wazuh/sync")

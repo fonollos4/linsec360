@@ -5,6 +5,11 @@
 #     playbooks/openscap-scan.yml --limit rhel9 \
 #     -e openscap_profile=cis_rhel.xml
 #
+# The bundled profiles are the official distro SCAP data streams downloaded by
+# /api/v1/compliance/profiles/refresh. They are copied to the target and scanned
+# directly. Older XCCDF tailoring files remain supported with
+# -e openscap_is_tailoring=true.
+#
 # The ARF file is fetched to artifacts/openscap/ and can be POSTed to
 # /api/v1/compliance/scans with artifact_path or content.
 - name: Run an OpenSCAP compliance scan
@@ -18,27 +23,29 @@
     # Extra vars (the UI profile selector) override play vars, so this must
     # never reference openscap_profile itself: that would recurse forever.
     openscap_profile: "{{ 'cis_rhel.xml' if ansible_os_family == 'RedHat' else 'cis_ubuntu.xml' }}"
-    openscap_backend: ssg
-    openscap_results_dir: /var/tmp/linsec-openscap
-    # The tailoring file lives on the controller; oscap runs on the target, so
-    # it must be staged there before evaluation.
-    openscap_tailoring_source: "{{ openscap_config_dir }}/openscap/profiles/{{ openscap_profile }}"
+    openscap_profile_source: "{{ openscap_config_dir }}/openscap/profiles/{{ openscap_profile }}"
+    # Bundled files are data streams. Set this to true only for legacy
+    # XCCDF tailoring documents kept for compatibility.
+    openscap_is_tailoring: false
+    openscap_default_profile_id: >-
+      {{ 'xccdf_org.ssgproject.content_profile_cis_server_l1'
+         if ansible_os_family == 'RedHat'
+         else 'xccdf_org.ssgproject.content_profile_cis_level1_server' }}
+    openscap_profile_id: "{{ openscap_default_profile_id }}"
+    openscap_datastream_file: "{{ openscap_results_dir }}/{{ openscap_profile }}"
     openscap_tailoring_file: "{{ openscap_results_dir }}/{{ openscap_profile }}"
-    # The tailoring document points at the benchmark it extends. That hint must
-    # name the data stream installed on the target (for example rhel9 vs
-    # rhel10), otherwise oscap rejects the tailoring file as inapplicable.
+    # Only evaluated on the legacy tailoring path.
     openscap_tailoring_content: >-
-      {{ lookup('ansible.builtin.file', openscap_tailoring_source)
+      {{ lookup('ansible.builtin.file', openscap_profile_source)
          | regex_replace('<xccdf:benchmark href="[^"]*"',
-                         '<xccdf:benchmark href="' ~ openscap_ssg_datastream ~ '"')
-      }}
-    # When --tailoring-file is used, --profile must name a profile defined in
-    # the tailoring document, not the base profile in the data stream.
-    openscap_profile_id: >-
-      {{ lookup('ansible.builtin.file', openscap_tailoring_source)
+                         '<xccdf:benchmark href="' ~ openscap_ssg_datastream ~ '"') }}
+    openscap_tailoring_profile_id: >-
+      {{ lookup('ansible.builtin.file', openscap_profile_source)
          | regex_findall('<xccdf:Profile\s+id="([^"]+)"')
          | first
          | default('') }}
+    openscap_backend: ssg
+    openscap_results_dir: /var/tmp/linsec-openscap
     openscap_result_path: "{{ openscap_results_dir }}/{{ inventory_hostname }}-arf.xml"
     openscap_ingest_url: ""
     openscap_api_token: ""
@@ -61,6 +68,7 @@
         patterns: "ssg-*-ds.xml"
         file_type: file
       register: openscap_datastream_files
+      when: openscap_is_tailoring | bool
 
     - name: Build data stream candidates for this operating system
       ansible.builtin.set_fact:
@@ -85,6 +93,7 @@
               '-ds.xml'
             ]
           }}
+      when: openscap_is_tailoring | bool
 
     - name: Select the data stream matching this operating system
       ansible.builtin.set_fact:
@@ -96,6 +105,7 @@
             | first
             | default('')
           }}
+      when: openscap_is_tailoring | bool
 
     - name: Validate that a matching SCAP data stream was installed
       ansible.builtin.assert:
@@ -105,6 +115,7 @@
           No SCAP Security Guide data stream was found for
           {{ ansible_distribution }} {{ ansible_distribution_version }}.
           Installed files: {{ openscap_datastream_files.files | map(attribute='path') | map('basename') | list }}
+      when: openscap_is_tailoring | bool
 
     - name: Ensure the scan result directory exists
       ansible.builtin.file:
@@ -114,15 +125,24 @@
         group: root
         mode: "0700"
 
-    - name: Validate that the tailoring profile exists on the controller
+    - name: Validate that the profile file exists on the controller
       ansible.builtin.assert:
         that:
-          - openscap_tailoring_source is file
+          - openscap_profile_source is file
         fail_msg: >-
-          Tailoring profile {{ openscap_tailoring_source }} was not found on the
-          controller. Check the configured profile directory.
+          Profile {{ openscap_profile_source }} was not found on the controller.
+          Download the distro data stream first from Parametres.
       delegate_to: localhost
       become: false
+
+    - name: Copy the distro SCAP data stream to the target
+      ansible.builtin.copy:
+        src: "{{ openscap_profile_source }}"
+        dest: "{{ openscap_datastream_file }}"
+        owner: root
+        group: root
+        mode: "0600"
+      when: not (openscap_is_tailoring | bool)
 
     - name: Copy the tailoring profile to the target
       ansible.builtin.copy:
@@ -131,13 +151,31 @@
         owner: root
         group: root
         mode: "0600"
+      when: openscap_is_tailoring | bool
 
-    - name: Validate that the tailoring profile defines a profile id
+    - name: Resolve the tailoring profile id
+      ansible.builtin.set_fact:
+        openscap_profile_id: "{{ openscap_tailoring_profile_id }}"
+      when: openscap_is_tailoring | bool
+
+    - name: Validate that the profile id is usable
       ansible.builtin.assert:
         that:
           - openscap_profile_id | length > 0
-        fail_msg: >-
-          No xccdf:Profile id was found in {{ openscap_tailoring_source }}.
+        fail_msg: "No usable XCCDF profile id was found for {{ openscap_profile }}."
+
+    - name: Run the OpenSCAP XCCDF evaluation with the distro data stream
+      ansible.builtin.command: >-
+        oscap xccdf eval
+        --profile {{ openscap_profile_id }}
+        --results {{ openscap_result_path }}
+        --report {{ openscap_results_dir }}/{{ inventory_hostname }}-report.html
+        {{ openscap_datastream_file }}
+      register: openscap_scan
+      changed_when: false
+      failed_when: openscap_scan.rc not in [0, 2]
+      check_mode: false
+      when: not (openscap_is_tailoring | bool)
 
     - name: Run the OpenSCAP XCCDF evaluation
       ansible.builtin.command: >-
@@ -147,10 +185,11 @@
         --results {{ openscap_result_path }}
         --report {{ openscap_results_dir }}/{{ inventory_hostname }}-report.html
         /usr/share/xml/scap/ssg/content/{{ openscap_ssg_datastream }}
-      register: openscap_scan
+      register: openscap_scan_tailoring
       changed_when: false
-      failed_when: openscap_scan.rc not in [0, 2]
+      failed_when: openscap_scan_tailoring.rc not in [0, 2]
       check_mode: false
+      when: openscap_is_tailoring | bool
 
     - name: Fetch the ARF result to the controller
       ansible.builtin.fetch:

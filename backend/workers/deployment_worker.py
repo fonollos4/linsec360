@@ -19,6 +19,7 @@ from ..services import (
     credential_service,
     deployment_service,
     inventory_service,
+    native_tool_secret_service,
     playbook_service,
     runtime_configuration_service,
     ssh_service,
@@ -33,6 +34,20 @@ class DeploymentPreflightError(RuntimeError):
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def _native_tool_vars(db) -> dict[str, str]:
+    """Inject native livepatch tokens after any operator-provided extra vars."""
+    values = native_tool_secret_service.values(db)
+    result: dict[str, str] = {}
+    ubuntu_token = values.get("ubuntu_pro_token")
+    if ubuntu_token:
+        result["ubuntu_pro_token"] = ubuntu_token
+        result["patching_ubuntu_pro_token"] = ubuntu_token
+    livepatch_token = values.get("canonical_livepatch_token")
+    if livepatch_token:
+        result["canonical_livepatch_token"] = livepatch_token
+    return result
 
 
 def _ingest_extra_vars(settings) -> dict[str, str]:
@@ -270,8 +285,9 @@ def run_deployment(deployment_id: str) -> None:
                     ),
                     **deployment.extra_vars,
                     # Injected last so a deployment payload cannot override the
-                    # worker-owned callback credentials.
+                    # worker-owned callback credentials or native-tool tokens.
                     **_ingest_extra_vars(settings),
+                    **_native_tool_vars(db),
                 },
                 settings.log_dir,
             )

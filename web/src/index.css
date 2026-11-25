@@ -931,6 +931,9 @@ textarea.ssh-key {
 .section-title { margin: 24px 0 12px; color: var(--ink); font-size: 15px; font-weight: 700; }
 .stack-summary .panel-heading small, .stack-summary .stat-line strong { overflow-wrap: anywhere; text-align: right; }
 .integrations-detail { margin-top: 14px; padding: 10px 12px; border-radius: 8px; background: var(--surface-soft); border: 1px dashed var(--line-strong); color: var(--muted); font-size: 11.5px; line-height: 1.55; overflow-wrap: anywhere; }
+.hash-line { font-family: var(--font-mono); font-size: 11px; overflow-wrap: anywhere; }
+.secret-field { display: flex; align-items: center; gap: 10px; }
+.secret-field input { flex: 1; min-width: 0; }
 
 /* ------------------------------------------------------------------ */
 /* Login                                                               */

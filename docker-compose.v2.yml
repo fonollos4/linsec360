@@ -62,6 +62,9 @@ x-backend-volumes: &backend-volumes
   - linsec_logs:/opt/linsec/logs
   - ${LINSEC_SSH_KEY_DIR:-./.ssh}:/opt/linsec/.ssh:ro
   - ./config/wazuh/indexer_ssl_certs:/opt/linsec/certs/wazuh:ro
+  # Shared by the API (refresh endpoint) and the worker (scan playbooks) so a
+  # downloaded distro data stream is the one actually used by deployments.
+  - ./config/openscap/profiles:/opt/linsec/config/openscap/profiles:rw
 
 services:
   wazuh-config:

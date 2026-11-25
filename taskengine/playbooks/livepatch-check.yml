@@ -12,8 +12,34 @@
     linsec_config_dir: "{{ playbook_dir ~ '/../../config' }}"
     livepatch_ingest_url: ""
     livepatch_api_token: ""
+    # Injected by the worker from encrypted Settings values, never by the
+    # deployment payload. Empty means "do not attach this host".
+    ubuntu_pro_token: ""
+    canonical_livepatch_token: ""
 
   tasks:
+    - name: Attach Ubuntu hosts to Ubuntu Pro with the native client
+      ansible.builtin.command:
+        cmd: "pro attach {{ ubuntu_pro_token }}"
+      register: livepatch_pro_attach
+      changed_when: livepatch_pro_attach.rc == 0
+      failed_when: false
+      no_log: true
+      when:
+        - ansible_distribution == 'Ubuntu'
+        - ubuntu_pro_token | length > 0
+
+    - name: Enable Canonical livepatch with the native client
+      ansible.builtin.command:
+        cmd: "canonical-livepatch enable {{ canonical_livepatch_token }}"
+      register: livepatch_canonical_enable
+      changed_when: livepatch_canonical_enable.rc == 0
+      failed_when: false
+      no_log: true
+      when:
+        - ansible_distribution == 'Ubuntu'
+        - canonical_livepatch_token | length > 0
+
     - name: Read live-patch state on the target
       ansible.builtin.script:
         cmd: "{{ linsec_config_dir }}/scripts/livepatch_report.py"

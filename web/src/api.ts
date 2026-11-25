@@ -124,6 +124,19 @@ export interface Playbook { id: number; filename: string; description: string | 
 export interface PlaybookDetail extends Playbook { content: string; updated_at: string }
 export interface PlaybookValidation { valid: boolean; detail: string }
 export interface IntegrationState { configured: boolean; available: boolean | null; reachable: boolean | null; detail: string | null }
+export interface OpenSCAPProfile {
+  name: string
+  archive: string
+  source_url: string
+  sha256: string
+  profile_id: string
+  size_bytes: number
+  updated_at: string | null
+}
+export interface NativeToolSecretState {
+  secrets: Array<{ key: string; configured: boolean; updated_at: string | null }>
+}
+export type NativeToolSecretKey = 'ubuntu_pro_token' | 'canonical_livepatch_token'
 export interface StackConfiguration {
   wazuh_manager_address: string
   wazuh_manager_agent_port: number
@@ -298,6 +311,9 @@ export const api = {
   retryDeployment: (id: string) => mutating<Deployment>(`/deployments/${id}/retry`, 'POST'),
   complianceScans: () => request<ComplianceScan[]>('/compliance/scans'),
   complianceProfiles: () => request<string[]>('/compliance/profiles'),
+  openscapProfileCatalog: () => request<OpenSCAPProfile[]>('/compliance/profiles/catalog'),
+  refreshOpenSCAPProfiles: (profiles: string[]) =>
+    mutating<OpenSCAPProfile[]>('/compliance/profiles/refresh', 'POST', { profiles }),
   complianceSummary: () => request<{ hosts_scanned: number; average_score: number | null; worst_hosts: Array<{ host: string; score: number }> }>('/compliance/summary'),
   exportCompliance: async (format: 'json' | 'csv') => {
     const response = await fetch(`${API_PREFIX}/compliance/scans/export?format=${format}`, { credentials: 'include' })
@@ -328,6 +344,9 @@ export const api = {
     mutating<StackConfiguration>('/integrations/config', 'PUT', body),
   resetStackConfiguration: () =>
     mutating<StackConfiguration>('/integrations/config', 'DELETE'),
+  nativeToolSecrets: () => request<NativeToolSecretState>('/integrations/native-secrets'),
+  updateNativeToolSecrets: (secrets: Partial<Record<NativeToolSecretKey, string | null>>) =>
+    mutating<NativeToolSecretState>('/integrations/native-secrets', 'PUT', { secrets }),
   testIntegration: (name: 'wazuh' | 'ansible') =>
     mutating<IntegrationState>(`/integrations/${name}/test`, 'POST'),
 }

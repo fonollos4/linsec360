@@ -45,6 +45,7 @@ import {
   type PatchFinding,
   type PlaybookDetail,
   type IntegrationState,
+  type NativeToolSecretKey,
   type StackConfiguration,
 } from './api'
 import { useNotifications, type NotificationInput } from './notification-context'
@@ -2351,6 +2352,170 @@ function StackConfigurationEditor({ onSaved }: { onSaved: () => Promise<void> })
   )
 }
 
+function OpenScapProfilesEditor() {
+  const client = useQueryClient()
+  const { notify } = useNotifications()
+  const catalog = useQuery({ queryKey: ['openscap-profile-catalog'], queryFn: api.openscapProfileCatalog })
+  const [busyProfile, setBusyProfile] = useState<string | null>(null)
+
+  const refresh = useMutation({
+    mutationFn: (profiles: string[]) => api.refreshOpenSCAPProfiles(profiles),
+    onMutate: (profiles) => setBusyProfile(profiles[0] ?? null),
+    onSettled: () => setBusyProfile(null),
+    onSuccess: (updated) => {
+      client.setQueryData(['openscap-profile-catalog'], (current: unknown) =>
+        (current as Array<{ name: string }> | undefined)?.map((item) =>
+          updated.find((entry) => entry.name === item.name) ?? item,
+        ) ?? updated,
+      )
+      void client.invalidateQueries({ queryKey: ['compliance-scans'] })
+      notify({
+        tone: 'success',
+        title: 'Profils OpenSCAP actualisés',
+        message: `${updated.length} data stream(s) téléchargé(s) et validé(s) depuis la distro.`,
+      })
+    },
+    onError: (cause) => notify({
+      tone: 'error',
+      title: 'Téléchargement impossible',
+      message: cause instanceof Error ? cause.message : 'Erreur inconnue',
+    }),
+  })
+
+  if (catalog.isError) return <div className="alert error">Impossible de charger le catalogue des profils OpenSCAP.</div>
+  if (catalog.isLoading || !catalog.data) return <Loading label="Chargement des profils OpenSCAP…" />
+
+  return (
+    <section className="panel form-panel">
+      <div className="panel-heading">
+        <div>
+          <h3>Profils CIS OpenSCAP</h3>
+          <p className="muted">Data streams officiels des dépôts Ubuntu et CentOS Stream, vérifiés par empreinte puis écrits dans le dossier des profils.</p>
+        </div>
+      </div>
+      <div className="integration-grid">
+        {catalog.data.map((profile) => (
+          <article className="panel" key={profile.name}>
+            <div className="panel-heading">
+              <div className="cell-stack"><strong>{profile.name}</strong><small>{profile.archive.toUpperCase()} · {profile.profile_id}</small></div>
+              <span className="badge success"><span className="dot" />{profile.updated_at ? 'Actualisé' : 'Empreinte figée'}</span>
+            </div>
+            <div className="panel-body">
+              <div className="stat-lines">
+                <div className="stat-line"><span>Archive source</span><strong className="hash-line">{profile.source_url.split('/').pop()}</strong></div>
+                <div className="stat-line"><span>SHA256</span><strong className="hash-line">{profile.sha256.slice(0, 16)}…</strong></div>
+                <div className="stat-line"><span>Taille</span><strong>{profile.size_bytes.toLocaleString('fr-FR')} octets</strong></div>
+              </div>
+              <div className="form-actions pad-top">
+                <button
+                  className="secondary"
+                  disabled={refresh.isPending}
+                  onClick={() => refresh.mutate([profile.name])}
+                >
+                  {busyProfile === profile.name ? 'Téléchargement…' : 'Télécharger depuis la distro'}
+                </button>
+              </div>
+            </div>
+          </article>
+        ))}
+      </div>
+      {refresh.isError && <div className="alert error">{refresh.error instanceof Error ? refresh.error.message : 'Téléchargement impossible.'}</div>}
+      <p className="integration-help">Les fichiers remplacent <code>config/openscap/profiles/cis_ubuntu.xml</code> et <code>cis_rhel.xml</code>. Le scan utilise directement le data stream ; les anciens fichiers de tailoring restent acceptés avec <code>openscap_is_tailoring=true</code>.</p>
+    </section>
+  )
+}
+
+const NATIVE_SECRET_LABELS: Record<NativeToolSecretKey, string> = {
+  ubuntu_pro_token: 'Token Ubuntu Pro / Livepatch',
+  canonical_livepatch_token: 'Token Canonical Livepatch',
+}
+
+function NativeToolSecretsEditor() {
+  const client = useQueryClient()
+  const { notify } = useNotifications()
+  const state = useQuery({ queryKey: ['native-tool-secrets'], queryFn: api.nativeToolSecrets })
+  const [values, setValues] = useState<Record<NativeToolSecretKey, string>>({
+    ubuntu_pro_token: '',
+    canonical_livepatch_token: '',
+  })
+
+  const save = useMutation({
+    mutationFn: (secrets: Partial<Record<NativeToolSecretKey, string | null>>) =>
+      api.updateNativeToolSecrets(secrets),
+    onSuccess: (updated) => {
+      client.setQueryData(['native-tool-secrets'], updated)
+      setValues({ ubuntu_pro_token: '', canonical_livepatch_token: '' })
+      notify({ tone: 'success', title: 'Clés enregistrées', message: 'Les valeurs sont chiffrées et ne sont plus affichées.' })
+    },
+    onError: (cause) => notify({
+      tone: 'error',
+      title: 'Enregistrement impossible',
+      message: cause instanceof Error ? cause.message : 'Erreur inconnue',
+    }),
+  })
+
+  if (state.isError) return <div className="alert error">Impossible de charger le statut des clés natives.</div>
+  if (state.isLoading || !state.data) return <Loading label="Chargement des clés natives…" />
+
+  return (
+    <section className="panel form-panel">
+      <div className="panel-heading">
+        <div>
+          <h3>Livepatch natif</h3>
+          <p className="muted">Clés utilisées par <code>pro</code> et <code>canonical-livepatch</code>. Elles sont chiffrées au repos, jamais renvoyées par l’API ni écrites dans l’audit.</p>
+        </div>
+      </div>
+      <div className="form-grid">
+        {state.data.secrets.map((secret) => {
+          const key = secret.key as NativeToolSecretKey
+          return (
+            <label key={secret.key}>
+              {NATIVE_SECRET_LABELS[key] ?? secret.key}
+              <div className="secret-field">
+                <input
+                  type="password"
+                  autoComplete="off"
+                  maxLength={256}
+                  value={values[key] ?? ''}
+                  placeholder={secret.configured ? 'Remplacer la valeur enregistrée' : 'Coller le token'}
+                  onChange={(event) => setValues((current) => ({ ...current, [key]: event.target.value }))}
+                />
+                <span className={`badge ${secret.configured ? 'success' : 'muted'}`}><span className="dot" />{secret.configured ? 'Configuré' : 'Non configuré'}</span>
+              </div>
+            </label>
+          )
+        })}
+      </div>
+      {save.isError && <div className="alert error">{save.error instanceof Error ? save.error.message : 'Enregistrement impossible.'}</div>}
+      <div className="form-actions pad-top">
+        <button
+          className="primary"
+          disabled={save.isPending || !Object.values(values).some((value) => value.trim())}
+          onClick={() => {
+            const payload: Partial<Record<NativeToolSecretKey, string | null>> = {}
+            for (const [key, value] of Object.entries(values) as Array<[NativeToolSecretKey, string]>) {
+              if (value.trim()) payload[key] = value
+            }
+            save.mutate(payload)
+          }}
+        >
+          {save.isPending ? 'Enregistrement…' : 'Enregistrer les clés'}
+        </button>
+        {state.data.secrets.filter((secret) => secret.configured).map((secret) => (
+          <button
+            key={secret.key}
+            className="secondary"
+            disabled={save.isPending}
+            onClick={() => save.mutate({ [secret.key as NativeToolSecretKey]: null })}
+          >
+            Effacer {NATIVE_SECRET_LABELS[secret.key as NativeToolSecretKey] ?? secret.key}
+          </button>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 function Profile() {
   const { notify } = useNotifications()
   const me = useQuery({ queryKey: ['me'], queryFn: api.me, retry: false })
@@ -2517,6 +2682,13 @@ function Settings() {
       </div>
       <p className="integration-help">Les IP sont résolues depuis le conteneur API. Une adresse Docker interne n’est pas nécessairement joignable depuis les serveurs gérés ; pour les agents Wazuh, vérifiez l’adresse visible sur la ligne « Wazuh Manager (agents) ».</p>
       {currentUser.data?.role === 'admin' && <StackConfigurationEditor onSaved={refresh} />}
+      <h2 className="section-title">Conformité & livepatch</h2>
+      {currentUser.data?.role === 'admin' && (
+        <>
+          <OpenScapProfilesEditor />
+          <NativeToolSecretsEditor />
+        </>
+      )}
       <h2 className="section-title">Tests de connexion</h2>
       <div className="integration-grid">
         {integrations.map(({ name, label, icon: Icon, key, state, mutation }) => (

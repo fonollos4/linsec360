@@ -18,9 +18,16 @@ from ..schemas import (
     ComplianceScanCreate,
     ComplianceScanDetail,
     ComplianceScanOut,
+    OpenSCAPProfileOut,
+    OpenSCAPProfileRefreshIn,
 )
 from ..security import get_current_user, require_roles
-from ..services import audit_service, kpi_service, oscap_service
+from ..services import (
+    audit_service,
+    kpi_service,
+    openscap_profile_service,
+    oscap_service,
+)
 
 router = APIRouter(prefix="/compliance", tags=["compliance"])
 
@@ -161,6 +168,39 @@ def list_profiles(
     if not directory.is_dir():
         return []
     return sorted(path.name for path in directory.iterdir() if path.is_file())
+
+
+@router.get("/profiles/catalog", response_model=list[OpenSCAPProfileOut])
+def profile_catalog(
+    user: models.User = Depends(get_current_user),
+) -> list[OpenSCAPProfileOut]:
+    """Describe the pinned distro data streams without downloading them."""
+    return [
+        OpenSCAPProfileOut.model_validate(item)
+        for item in openscap_profile_service.catalog()
+    ]
+
+
+@router.post("/profiles/refresh", response_model=list[OpenSCAPProfileOut])
+def profile_refresh(
+    payload: OpenSCAPProfileRefreshIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(require_roles("admin")),
+) -> list[OpenSCAPProfileOut]:
+    """Validate and atomically replace the selected bundled data streams."""
+    results = openscap_profile_service.refresh(payload.profiles)
+    audit_service.record(
+        db,
+        actor=user,
+        action="compliance.profile.refresh",
+        target_type="compliance",
+        target_id="openscap",
+        data={"profiles": [item["name"] for item in results]},
+        request=request,
+    )
+    db.commit()
+    return [OpenSCAPProfileOut.model_validate(item) for item in results]
 
 
 @router.get("/summary")

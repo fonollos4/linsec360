@@ -809,3 +809,39 @@ class Paginated(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class OpenSCAPProfileOut(BaseModel):
+    name: str
+    archive: str
+    source_url: str
+    sha256: str
+    profile_id: str
+    size_bytes: int
+    updated_at: datetime | None = None
+
+
+class OpenSCAPProfileRefreshIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    profiles: list[
+        Literal["cis_ubuntu.xml", "cis_rhel.xml"]
+    ] = Field(default_factory=list, min_length=1, max_length=2)
+
+
+class NativeToolSecretOut(BaseModel):
+    key: str
+    configured: bool
+    updated_at: datetime | None = None
+
+
+class NativeToolSecretState(BaseModel):
+    secrets: list[NativeToolSecretOut]
+
+
+class NativeToolSecretUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    secrets: dict[
+        Literal["ubuntu_pro_token", "canonical_livepatch_token"], str | None
+    ] = Field(min_length=1)
