@@ -57,6 +57,46 @@ def test_create_and_list_deployment(client: TestClient, csrf_headers, queue):
     assert response.text == ""
 
 
+def test_deployment_list_is_paginated_and_filterable(client: TestClient, csrf_headers, queue):
+    headers = csrf_headers()
+    identifiers = []
+    for _ in range(3):
+        response = _create_deployment(client, headers)
+        assert response.status_code == 202, response.text
+        identifiers.append(response.json()["id"])
+        with session_scope() as db:
+            finished = db.get(models.Deployment, response.json()["id"])
+            assert finished is not None
+            finished.status = "succeeded"
+
+    first_page = client.get("/api/v1/deployments?limit=2&offset=0")
+    assert first_page.status_code == 200
+    assert first_page.headers["X-Total-Count"] == "3"
+    first_ids = [item["id"] for item in first_page.json()]
+    assert len(first_ids) == 2
+
+    second_page = client.get("/api/v1/deployments?limit=2&offset=2")
+    assert second_page.status_code == 200
+    second_ids = [item["id"] for item in second_page.json()]
+    assert len(second_ids) == 1
+    assert set(first_ids).isdisjoint(second_ids)
+    assert set(first_ids + second_ids) == set(identifiers)
+
+    with session_scope() as db:
+        deployment = db.get(models.Deployment, identifiers[0])
+        assert deployment is not None
+        deployment.status = "failed"
+
+    filtered = client.get("/api/v1/deployments?status=failed")
+    assert filtered.status_code == 200
+    assert filtered.headers["X-Total-Count"] == "1"
+    assert [item["id"] for item in filtered.json()] == [identifiers[0]]
+
+    combined = client.get("/api/v1/deployments?status=succeeded,failed")
+    assert combined.status_code == 200
+    assert combined.headers["X-Total-Count"] == "3"
+
+
 def test_deployment_check_mode_and_extra_vars(client: TestClient, csrf_headers, queue):
     headers = csrf_headers()
     create_host(client, headers)
@@ -79,6 +119,58 @@ def test_deployment_check_mode_and_extra_vars(client: TestClient, csrf_headers, 
         assert deployment is not None
         assert deployment.extra_vars["linsec_check_mode"] == "true"
         assert deployment.extra_vars["openscap_profile"] == "cis_ubuntu.xml"
+
+
+def test_check_mode_is_rejected_for_playbooks_that_ingest_results(client: TestClient, csrf_headers, queue):
+    headers = csrf_headers()
+    create_host(client, headers)
+    response = client.post(
+        "/api/v1/deployments",
+        headers=headers,
+        json={
+            "environment": "production",
+            "playbook": "patch-security.yml",
+            "hosts": ["web01"],
+            "check_mode": True,
+        },
+    )
+    assert response.status_code == 400
+    assert "check mode" in response.json()["error"]["message"].lower()
+    assert queue.enqueued == []
+
+
+def test_retry_preserves_targeting_and_check_mode(client: TestClient, csrf_headers, queue):
+    headers = csrf_headers()
+    create_host(client, headers, groups=["web"])
+    create_playbook(client, headers)
+    created = client.post(
+        "/api/v1/deployments",
+        headers=headers,
+        json={
+            "environment": "production",
+            "playbook": "custom.yml",
+            "hosts": ["web01"],
+            "group": "web",
+            "check_mode": True,
+            "extra_vars": {"openscap_profile": "cis_ubuntu.xml"},
+        },
+    )
+    assert created.status_code == 202, created.text
+    original_id = created.json()["id"]
+
+    with session_scope() as db:
+        original = db.get(models.Deployment, original_id)
+        assert original is not None
+        original.status = "failed"
+
+    retried = client.post(f"/api/v1/deployments/{original_id}/retry", headers=headers)
+    assert retried.status_code == 202, retried.text
+    with session_scope() as db:
+        replacement = db.get(models.Deployment, retried.json()["id"])
+        assert replacement is not None
+        assert replacement.extra_vars["openscap_profile"] == "cis_ubuntu.xml"
+        assert replacement.extra_vars["linsec_check_mode"] == "true"
+        assert replacement.extra_vars["linsec_target_group"] == "web"
 
 
 def test_deployment_with_unknown_host_is_rejected(client: TestClient, csrf_headers):

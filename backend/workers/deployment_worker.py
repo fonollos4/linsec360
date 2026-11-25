@@ -17,6 +17,7 @@ from ..db import session_scope
 from ..errors import IntegrationUnavailable
 from ..services import (
     credential_service,
+    deployment_service,
     inventory_service,
     playbook_service,
     runtime_configuration_service,
@@ -264,7 +265,9 @@ def run_deployment(deployment_id: str) -> None:
                 env_vars_path=env_vars_path,
                 host_vars_path=host_vars_path,
                 target_hosts=target_names,
-                check_mode=bool(deployment.extra_vars.get("linsec_check_mode")),
+                check_mode=deployment_service.is_truthy(
+                    deployment.extra_vars.get("linsec_check_mode")
+                ),
             )
             environment = _ansible_environment(settings)
             # The service account and its key are provisioned by the admin

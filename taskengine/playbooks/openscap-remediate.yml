@@ -39,6 +39,8 @@
           profile: "{{ openscap_profile }}"
           content: "{{ openscap_after_file.content | b64decode }}"
         status_code: [200, 201]
+      delegate_to: localhost
+      become: false
       no_log: true
       when:
         - openscap_ingest_url | length > 0

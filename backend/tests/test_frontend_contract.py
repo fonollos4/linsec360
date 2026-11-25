@@ -7,6 +7,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 API_TS = ROOT / "web" / "src" / "api.ts"
 APP_TSX = ROOT / "web" / "src" / "App.tsx"
+NGINX_LOCATIONS = ROOT / "web" / "snippets" / "linsec-locations.conf"
+
+
+def test_hosts_collection_path_is_not_redirected_by_nginx() -> None:
+    source = NGINX_LOCATIONS.read_text(encoding="utf-8")
+
+    # A broad prefix location redirects /api/v1/hosts to /api/v1/hosts/, while
+    # FastAPI redirects that back to /api/v1/hosts. Scope the WebSocket location
+    # to a concrete host id so the collection route reaches the generic proxy.
+    assert "location /api/v1/hosts/ {" not in source
+    assert "location ~ ^/api/v1/hosts/[0-9]+/terminal/ws$" in source
 
 
 def test_unauthorized_responses_reset_frontend_auth_state() -> None:
@@ -18,6 +29,25 @@ def test_unauthorized_responses_reset_frontend_auth_state() -> None:
     assert "window.addEventListener('linsec:unauthorized'" in app_source
     assert "setAuthenticated(false)" in app_source
     assert "client.clear()" in app_source
+
+
+def test_deployments_page_paginates_without_losing_scroll_position() -> None:
+    api_source = API_TS.read_text(encoding="utf-8")
+    app_source = APP_TSX.read_text(encoding="utf-8")
+
+    assert "X-Total-Count" in api_source
+    assert "keepPreviousData" in app_source
+    assert "setOffset(0)" in app_source
+    assert "window.scrollTo(0, 0)" in app_source
+
+
+def test_frontend_sends_patch_target_pairs() -> None:
+    app_source = APP_TSX.read_text(encoding="utf-8")
+
+    assert "patch_target_packages" not in app_source
+    assert "patch_target_cves" not in app_source
+    assert "buildPatchTargets" in app_source
+    assert "patch_targets: JSON.stringify(targets)" in app_source
 
 
 def test_frontend_does_not_expose_ssh_fingerprint_workflow() -> None:

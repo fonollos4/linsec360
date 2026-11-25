@@ -49,6 +49,8 @@
           patch_available: "{{ livepatch_report.patch_available }}"
           exposure_days: "{{ livepatch_report.exposure_days }}"
         status_code: [200, 201]
+      delegate_to: localhost
+      become: false
       no_log: true
       when:
         - livepatch_ingest_url | length > 0

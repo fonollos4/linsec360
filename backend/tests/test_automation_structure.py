@@ -270,16 +270,26 @@ def test_compliance_and_patch_playbooks_ingest_their_results():
         ]
         assert ingest_tasks
         assert all("failed_when" not in task for task in ingest_tasks)
+        # The callback URL is Docker-internal, so ingestion must run on the
+        # controller/worker, never on the managed host.
+        assert all(task.get("delegate_to") == "localhost" for task in ingest_tasks)
+        assert all(task.get("become") is False for task in ingest_tasks)
 
 
 def test_patch_playbooks_support_targeted_and_verified_packages():
     for filename in ("patch-security.yml", "patch-verify.yml"):
         play = yaml.safe_load(_read(TASKENGINE / "playbooks" / filename))[0]
         assert play["hosts"] == "all"
-        assert "patch_target_packages" in play["vars"]
-        assert "patch_target_cves" in play["vars"]
+        assert "patch_targets" in play["vars"]
         assert "patch_ingest_url" in play["vars"]
         assert "patch_api_token" in play["vars"]
+        assert "patch_target_packages" not in play["vars"]
+        assert "patch_target_cves" not in play["vars"]
     security = yaml.safe_load(_read(TASKENGINE / "playbooks" / "patch-security.yml"))[0]
     names = [task.get("name") for task in _all_tasks(security["tasks"])]
     assert "Reboot only when required and explicitly allowed" in names
+    for filename in ("patch-security.yml", "patch-verify.yml"):
+        content = _read(TASKENGINE / "playbooks" / filename)
+        assert "'package': item.package" in content
+        assert "'cve': item.cve" in content
+        assert "'fixed_version': item.fixed_version" in content

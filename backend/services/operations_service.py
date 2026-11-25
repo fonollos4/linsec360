@@ -77,6 +77,13 @@ def run_due_schedules(db: Session) -> int:
                             environment=schedule.environment_name,
                             playbook=playbook,
                             hosts=schedule.target_hosts,
+                            check_mode=bool(schedule.config.get("check_mode", False)),
+                            extra_vars={
+                                str(key): str(value)
+                                for key, value in schedule.config.get(
+                                    "extra_vars", {}
+                                ).items()
+                            },
                         ),
                         actor=actor,
                     )

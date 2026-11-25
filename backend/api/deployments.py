@@ -6,7 +6,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -29,12 +29,16 @@ LOG_TAIL_BYTES = 256 * 1024
 
 @router.get("", response_model=list[DeploymentOut])
 def list_deployments(
+    response: Response,
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     status: str | None = None,
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ) -> list[DeploymentOut]:
+    response.headers["X-Total-Count"] = str(
+        deployment_service.count_deployments(db, status=status)
+    )
     deployments = deployment_service.list_deployments(
         db, limit=limit, offset=offset, status=status
     )

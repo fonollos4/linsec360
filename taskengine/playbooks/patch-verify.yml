@@ -1,61 +1,79 @@
 ---
-# Verify that selected packages are installed after patching and publish the
-# result to LinSec360. No reboot is performed by this verification playbook.
+# Verify that selected package/CVE tuples are installed after patching and
+# publish measured evidence to LinSec360. The callback runs on the controller.
 - name: Verify native security patches
   hosts: all
   become: true
   gather_facts: true
 
   vars:
-    patch_target_packages: "[]"
-    patch_target_cves: "[]"
+    patch_targets: "[]"
     patch_ingest_url: ""
     patch_api_token: ""
 
   tasks:
-    - name: Normalize targeted package and CVE lists
+    - name: Normalize targeted patch tuples
       ansible.builtin.set_fact:
-        patch_packages: "{{ patch_target_packages | from_json if patch_target_packages is string else patch_target_packages }}"
-        patch_cves: "{{ patch_target_cves | from_json if patch_target_cves is string else patch_target_cves }}"
+        patch_targets_list: >-
+          {{ patch_targets | from_json if patch_targets is string else patch_targets }}
+        patch_packages: >-
+          {{ (patch_targets | from_json if patch_targets is string else patch_targets)
+             | map(attribute='package') | unique | list }}
 
     - name: Collect installed package facts
       ansible.builtin.package_facts:
         manager: auto
-      when: patch_packages | length > 0
+      when: patch_targets_list | length > 0
 
-    - name: Check whether a reboot is still required
+    - name: Check whether a reboot is still required on Debian family hosts
       ansible.builtin.stat:
         path: /var/run/reboot-required
       register: patch_reboot_required_debian
       when: ansible_os_family == "Debian"
 
-    - name: Check whether a reboot is still required
+    - name: Check whether needs-restarting is available on Red Hat family hosts
+      ansible.builtin.command: command -v needs-restarting
+      register: patch_reboot_check
+      changed_when: false
+      failed_when: false
+      when: ansible_os_family == "RedHat"
+
+    - name: Check whether a reboot is still required on Red Hat family hosts
       ansible.builtin.command: needs-restarting -r
       register: patch_reboot_required_redhat
       changed_when: false
       failed_when: false
-      when: ansible_os_family == "RedHat"
+      when:
+        - ansible_os_family == "RedHat"
+        - patch_reboot_check.rc == 0
 
     - name: Set the reboot requirement fact
       ansible.builtin.set_fact:
         patch_reboot_required: >-
           {{ (ansible_os_family == 'Debian' and patch_reboot_required_debian.stat.exists)
-             or (ansible_os_family == 'RedHat' and patch_reboot_required_redhat.rc == 1) }}
+             or (ansible_os_family == 'RedHat' and patch_reboot_check.rc == 0
+                 and patch_reboot_required_redhat.rc == 1) }}
 
-    - name: Build verification checks
+    - name: Build verification checks from measured package state
       ansible.builtin.set_fact:
         patch_result_checks: >-
           {{ patch_result_checks | default([]) + [{
-            'package': item,
-            'cve': (patch_cves[idx] if idx < patch_cves | length else ''),
-            'installed_version': (ansible_facts.packages[item] | first).version
-              if item in ansible_facts.packages else '',
-            'verified': true,
+            'package': item.package,
+            'cve': item.cve | default('', true),
+            'fixed_version': item.fixed_version | default('', true),
+            'installed_version': installed_version,
+            'verified': meets_fixed_version,
             'reboot_required': patch_reboot_required | bool
           }] }}
-      loop: "{{ patch_packages }}"
-      loop_control:
-        index_var: idx
+      loop: "{{ patch_targets_list }}"
+      vars:
+        installed_version: >-
+          {{ (ansible_facts.packages[item.package] | first).version
+             if item.package in ansible_facts.packages else '' }}
+        meets_fixed_version: >-
+          {{ installed_version | length > 0 and
+             (item.fixed_version | default('', true) | length == 0 or
+              installed_version is version(item.fixed_version | default('', true), '>=')) }}
 
     - name: Send verification results to LinSec360
       ansible.builtin.uri:
@@ -69,6 +87,8 @@
           host_name: "{{ inventory_hostname }}"
           checks: "{{ patch_result_checks | default([]) }}"
         status_code: [200, 201]
+      delegate_to: localhost
+      become: false
       no_log: true
       when:
         - patch_result_checks is defined

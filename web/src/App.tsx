@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity,
   ArrowUpRight,
@@ -77,6 +77,30 @@ const navGroups: Array<{ label: string; items: NavItem[] }> = [
 ]
 
 const hostIdentifier = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/
+
+type PatchTarget = { package: string; cve: string; fixed_version: string }
+
+function buildPatchTargets(findings: Array<{ package: string; cve: string; fixed_version?: string | null }>): PatchTarget[] {
+  const seen = new Set<string>()
+  const targets: PatchTarget[] = []
+  for (const finding of findings) {
+    const target: PatchTarget = {
+      package: finding.package,
+      cve: finding.cve ?? '',
+      fixed_version: finding.fixed_version ?? '',
+    }
+    const key = `${target.package}|${target.cve}|${target.fixed_version}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    targets.push(target)
+  }
+  return targets
+}
+
+function buildPatchExtraVars(findings: Array<{ package: string; cve: string; fixed_version?: string | null }>): Record<string, string> {
+  const targets = buildPatchTargets(findings)
+  return targets.length ? { patch_targets: JSON.stringify(targets) } : {}
+}
 
 const statusLabels: Record<string, string> = {
   success: 'Succès',
@@ -489,8 +513,8 @@ function Login({ onLogin }: { onLogin: () => void }) {
 function Overview() {
   const navigate = useNavigate()
   const kpis = useQuery({ queryKey: ['kpis'], queryFn: api.kpis })
-  const hosts = useQuery({ queryKey: ['hosts'], queryFn: api.hosts })
-  const deployments = useQuery({ queryKey: ['deployments'], queryFn: api.deployments })
+  const hosts = useQuery({ queryKey: ['hosts'], queryFn: () => api.hosts({ limit: 500 }) })
+  const deployments = useQuery({ queryKey: ['deployments', 'overview'], queryFn: () => api.deployments({ limit: 6 }) })
   const history = useQuery({ queryKey: ['kpi-history', 'compliance_score'], queryFn: () => api.kpiHistory('compliance_score') })
   const alertSummary = useQuery({ queryKey: ['alert-summary'], queryFn: api.alertSummary, retry: false })
 
@@ -513,7 +537,7 @@ function Overview() {
   const severityMax = Math.max(1, ...severityRows.map((row) => row.count))
   const unacknowledged = severityRows.length ? severityRows.reduce((sum, row) => sum + row.count, 0) : null
   const recentHosts = (hosts.data ?? []).slice(0, 6)
-  const recentDeployments = (deployments.data ?? []).slice(0, 6)
+  const recentDeployments = deployments.data?.items ?? []
 
   return (
     <div className="page">
@@ -684,7 +708,7 @@ function Hosts() {
   const currentUser = useQuery({ queryKey: ['me'], queryFn: api.me })
   const canManageHosts = currentUser.data?.role === 'admin' || currentUser.data?.role === 'operator'
   const kpis = useQuery({ queryKey: ['kpis'], queryFn: api.kpis, refetchInterval: 30_000 })
-  const { data = [], isLoading, error } = useQuery({ queryKey: ['hosts'], queryFn: api.hosts })
+  const { data = [], isLoading, error } = useQuery({ queryKey: ['hosts'], queryFn: () => api.hosts({ limit: 500 }) })
   const playbooks = useQuery({ queryKey: ['playbooks'], queryFn: api.playbooks })
   const authorizedPlaybooks = (playbooks.data ?? []).filter((item) => item.is_allowlisted)
   const defaultPlaybook = authorizedPlaybooks.find((item) => item.filename === 'site.yml')?.filename
@@ -1154,10 +1178,7 @@ function HostDetail() {
   const openscapExtraVars: Record<string, string> = currentPosture?.compliance?.profile
     ? { openscap_profile: currentPosture.compliance.profile }
     : {}
-  const patchExtraVars = {
-    patch_target_packages: JSON.stringify([...new Set(pendingFindings.map((finding) => finding.package))]),
-    patch_target_cves: JSON.stringify([...new Set(pendingFindings.map((finding) => finding.cve).filter(Boolean))]),
-  }
+  const patchExtraVars = buildPatchExtraVars(pendingFindings)
 
   return (
     <div className="page">
@@ -1233,8 +1254,8 @@ function HostDetail() {
         </div>
         <div className="form-actions">
           <button className="secondary" onClick={() => void launch('livepatch-check.yml', 'Livepatch')}>Vérifier le livepatch</button>
-          <button className="secondary" disabled={!patchExtraVars.patch_target_packages || patchExtraVars.patch_target_packages === '[]'} onClick={() => void launch('patch-security.yml', 'Correctifs', patchExtraVars)}>Appliquer les correctifs ciblés</button>
-          <button className="secondary" disabled={!patchExtraVars.patch_target_packages || patchExtraVars.patch_target_packages === '[]'} onClick={() => void launch('patch-verify.yml', 'Vérification correctifs', patchExtraVars)}>Vérifier les correctifs</button>
+          <button className="secondary" disabled={!patchExtraVars.patch_targets || patchExtraVars.patch_targets === '[]'} onClick={() => void launch('patch-security.yml', 'Correctifs', patchExtraVars)}>Appliquer les correctifs ciblés</button>
+          <button className="secondary" disabled={!patchExtraVars.patch_targets || patchExtraVars.patch_targets === '[]'} onClick={() => void launch('patch-verify.yml', 'Vérification correctifs', patchExtraVars)}>Vérifier les correctifs</button>
         </div>
         {pendingFindings.length > 0 && <DataTable headers={['Paquet', 'CVE', 'Sévérité', 'Redémarrage']} rows={pendingFindings.slice(0, 20).map((finding) => [<strong key={finding.id}>{finding.package}</strong>, <span className="mono" key={`cve-${finding.id}`}>{finding.cve}</span>, <StatusBadge key={`sev-${finding.id}`} value={finding.severity} />, <span key={`reboot-${finding.id}`}>{finding.reboot_required ? 'Oui' : 'Non'}</span>])} />}
       </article>
@@ -1248,19 +1269,39 @@ function HostDetail() {
 /* Deployments                                                         */
 /* ------------------------------------------------------------------ */
 
+const DEPLOYMENT_PAGE_SIZE = 25
+
 function Deployments() {
   const client = useQueryClient()
   const navigate = useNavigate()
   const currentUser = useQuery({ queryKey: ['me'], queryFn: api.me })
   const canOperate = currentUser.data?.role === 'admin' || currentUser.data?.role === 'operator'
-  const { data = [], isLoading } = useQuery({ queryKey: ['deployments'], queryFn: api.deployments })
-  const hosts = useQuery({ queryKey: ['hosts'], queryFn: api.hosts })
-  const playbooks = useQuery({ queryKey: ['playbooks'], queryFn: api.playbooks })
   const [environment, setEnvironment] = useState('')
   const [targetHosts, setTargetHosts] = useState<string[]>([])
   const [selectedPlaybook, setSelectedPlaybook] = useState('')
   const [checkMode, setCheckMode] = useState(false)
   const [filter, setFilter] = useState<'all' | 'active' | 'finished'>('all')
+  const [offset, setOffset] = useState(0)
+  const statusParam = filter === 'active' ? 'queued,running' : filter === 'finished' ? 'succeeded,failed,cancelled' : undefined
+  const deployments = useQuery({
+    queryKey: ['deployments', 'list', { filter, offset }],
+    queryFn: () => api.deployments({ limit: DEPLOYMENT_PAGE_SIZE, offset, status: statusParam }),
+    placeholderData: keepPreviousData,
+    refetchInterval: (query) => query.state.data?.items.some((job) => ['queued', 'running'].includes(job.status)) ? 5000 : false,
+  })
+  const statusTotals = useQuery({
+    queryKey: ['deployments', 'totals'],
+    queryFn: async () => {
+      const [active, succeeded, failed] = await Promise.all([
+        api.deployments({ limit: 1, status: 'queued,running' }),
+        api.deployments({ limit: 1, status: 'succeeded' }),
+        api.deployments({ limit: 1, status: 'failed,cancelled' }),
+      ])
+      return { active: active.total, succeeded: succeeded.total, failed: failed.total }
+    },
+  })
+  const hosts = useQuery({ queryKey: ['hosts'], queryFn: () => api.hosts({ limit: 500 }) })
+  const playbooks = useQuery({ queryKey: ['playbooks'], queryFn: api.playbooks })
   const cancel = useMutation({ mutationFn: api.cancelDeployment, onSuccess: () => void client.invalidateQueries({ queryKey: ['deployments'] }) })
   const retry = useMutation({ mutationFn: api.retryDeployment, onSuccess: () => void client.invalidateQueries({ queryKey: ['deployments'] }) })
   const create = useMutation({
@@ -1270,17 +1311,20 @@ function Deployments() {
       navigate(`/deployments/${deployment.id}`)
     },
   })
-  const environments = [...new Set((hosts.data ?? []).map((host) => host.environment))]
+  const environments = [...new Set((hosts.data ?? []).map((host) => host.environment))].sort()
   const environmentHosts = (hosts.data ?? []).filter((host) => host.environment === environment)
   const allowedPlaybooks = (playbooks.data ?? []).filter((item) => item.is_allowlisted)
-  if (isLoading) return <Loading label="Chargement des déploiements…" />
-  const running = data.filter((job) => ['queued', 'running'].includes(job.status)).length
-  const succeeded = data.filter((job) => job.status === 'succeeded').length
-  const failed = data.filter((job) => ['failed', 'cancelled'].includes(job.status)).length
-  const visible = data.filter((job) => filter === 'all' || (filter === 'active' ? ['queued', 'running'].includes(job.status) : ['succeeded', 'failed', 'cancelled'].includes(job.status)))
+  const changeFilter = (next: typeof filter) => { setFilter(next); setOffset(0) }
+  if (deployments.isLoading) return <Loading label="Chargement des déploiements…" />
+  const rows = deployments.data?.items ?? []
+  const total = deployments.data?.total ?? 0
+  const pageCount = Math.max(1, Math.ceil(total / DEPLOYMENT_PAGE_SIZE))
+  const page = Math.floor(offset / DEPLOYMENT_PAGE_SIZE) + 1
+  const goToPage = (next: number) => setOffset(Math.max(0, Math.min(next - 1, pageCount - 1)) * DEPLOYMENT_PAGE_SIZE)
   return (
     <div className="page">
-      <PageHeader eyebrow="Automatisation" title="Déploiements" description={`${formatNumber(data.length)} exécution(s) · ${formatNumber(running)} en cours · ${formatNumber(succeeded)} réussie(s) · ${formatNumber(failed)} échouée(s)`} />
+      <PageHeader eyebrow="Automatisation" title="Déploiements" description={`${formatNumber(total)} exécution(s) · ${formatNumber(statusTotals.data?.active ?? 0)} en cours · ${formatNumber(statusTotals.data?.succeeded ?? 0)} réussie(s) · ${formatNumber(statusTotals.data?.failed ?? 0)} échouée(s)`} />
+      {(deployments.isError || hosts.isError) && <div className="alert error">Impossible de charger les déploiements ou les hôtes cibles. Vérifiez la session puis réessayez.</div>}
       {canOperate && (
         <article className="panel form-panel">
           <div className="panel-heading"><div><p className="eyebrow">Nouvelle exécution</p><h2>Lancer un playbook</h2></div></div>
@@ -1299,15 +1343,15 @@ function Deployments() {
         <div className="panel-heading">
           <div><p className="eyebrow">Historique</p><h2>Exécutions Ansible</h2></div>
           <div className="segmented">
-            <button className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>Toutes</button>
-            <button className={filter === 'active' ? 'active' : ''} onClick={() => setFilter('active')}>En cours</button>
-            <button className={filter === 'finished' ? 'active' : ''} onClick={() => setFilter('finished')}>Terminées</button>
+            <button className={filter === 'all' ? 'active' : ''} onClick={() => changeFilter('all')}>Toutes</button>
+            <button className={filter === 'active' ? 'active' : ''} onClick={() => changeFilter('active')}>En cours</button>
+            <button className={filter === 'finished' ? 'active' : ''} onClick={() => changeFilter('finished')}>Terminées</button>
           </div>
         </div>
         <DataTable
           headers={['Playbook', 'Environnement', 'Cibles', 'Lancé', 'Statut', 'Actions']}
           empty="Aucun déploiement"
-          rows={visible.map((job) => [
+          rows={rows.map((job) => [
             <div className="cell-stack" key={`job-${job.id}`}><button className="link-button strong" onClick={() => navigate(`/deployments/${job.id}`)}>{job.playbook}</button><small className="mono">{job.id.slice(0, 12)}</small></div>,
             <span className="badge muted" key={`env-${job.id}`}>{job.environment}</span>,
             `${job.target_hosts.length}`,
@@ -1318,6 +1362,15 @@ function Deployments() {
               : <button className="link-button" key={`action-${job.id}`} disabled={retry.isPending} onClick={() => retry.mutate(job.id)}>Réexécuter</button>),
           ])}
         />
+        {pageCount > 1 && (
+          <div className="pagination">
+            <span>Page {page} / {pageCount} · {formatNumber(total)} exécution(s)</span>
+            <div>
+              <button className="secondary btn sm" disabled={page <= 1} onClick={() => goToPage(page - 1)}>Précédent</button>
+              <button className="secondary btn sm" disabled={page >= pageCount} onClick={() => goToPage(page + 1)}>Suivant</button>
+            </div>
+          </div>
+        )}
       </article>
     </div>
   )
@@ -1387,7 +1440,7 @@ function DeploymentDetail() {
 
 function Compliance() {
   const { data = [], isLoading, error } = useQuery({ queryKey: ['compliance'], queryFn: api.complianceScans })
-  const hosts = useQuery({ queryKey: ['hosts'], queryFn: api.hosts })
+  const hosts = useQuery({ queryKey: ['hosts'], queryFn: () => api.hosts({ limit: 500 }) })
   const profiles = useQuery({ queryKey: ['compliance-profiles'], queryFn: api.complianceProfiles })
   const summary = useQuery({ queryKey: ['compliance-summary'], queryFn: api.complianceSummary })
   const client = useQueryClient()
@@ -1494,7 +1547,7 @@ function Compliance() {
 function Patching() {
   const client = useQueryClient()
   const { data = [], isLoading, error } = useQuery({ queryKey: ['patch-findings'], queryFn: api.patchFindings })
-  const hosts = useQuery({ queryKey: ['hosts'], queryFn: api.hosts })
+  const hosts = useQuery({ queryKey: ['hosts'], queryFn: () => api.hosts({ limit: 500 }) })
   const kpis = useQuery({ queryKey: ['kpis'], queryFn: api.kpis, refetchInterval: 30_000 })
   const [hostName, setHostName] = useState('')
   const [selectedFindingIds, setSelectedFindingIds] = useState<number[]>([])
@@ -1533,11 +1586,7 @@ function Patching() {
   const selectedFindings = selectedFindingIds.length
     ? hostFindings.filter((finding) => selectedFindingIds.includes(finding.id))
     : hostFindings
-  const targetPackages = JSON.stringify([...new Set(selectedFindings.map((finding) => finding.package))])
-  const targetCves = JSON.stringify([...new Set(selectedFindings.map((finding) => finding.cve).filter(Boolean))])
-  const patchExtraVars: Record<string, string> = selectedFindings.length
-    ? { patch_target_packages: targetPackages, patch_target_cves: targetCves }
-    : {}
+  const patchExtraVars = buildPatchExtraVars(selectedFindings)
   return (
     <div className="page">
       <PageHeader
@@ -2155,6 +2204,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
   const me = useQuery({ queryKey: ['me'], queryFn: api.me, retry: false })
   const location = useLocation()
   const label = currentNavLabel(location.pathname)
+  useEffect(() => { window.scrollTo(0, 0) }, [location.pathname])
   const role = me.data?.role ? me.data.role.charAt(0).toUpperCase() + me.data.role.slice(1) : 'Session'
   return (
     <div className="app">

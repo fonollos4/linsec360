@@ -424,6 +424,47 @@ def test_patch_results_ingestion_updates_findings(client: TestClient, csrf_heade
     assert summary["patches"]["open"] == 0
 
 
+def test_patch_results_do_not_resolve_versions_below_fixed_version(
+    client: TestClient, csrf_headers
+):
+    headers = csrf_headers()
+    create_host(client, headers)
+    with session_scope() as db:
+        db.add(
+            models.PatchFinding(
+                host_name="web01",
+                package="openssl",
+                cve="CVE-2026-0002",
+                severity="critical",
+                source="wazuh",
+                status="open",
+                fixed_version="3.0.2",
+            )
+        )
+
+    response = client.post(
+        "/api/v1/patching/results",
+        headers=headers,
+        json={
+            "host_name": "web01",
+            "checks": [
+                {
+                    "package": "openssl",
+                    "cve": "CVE-2026-0002",
+                    "fixed_version": "3.0.2",
+                    "installed_version": "3.0.0",
+                    "applied": True,
+                    "verified": True,
+                }
+            ],
+        },
+    )
+    assert response.status_code == 201, response.text
+    finding = response.json()[0]
+    assert finding["status"] == "open"
+    assert finding["current_version"] == "3.0.0"
+
+
 def test_posture_aggregates_local_layers(client: TestClient, csrf_headers):
     headers = csrf_headers()
     host = create_host(client, headers).json()
@@ -601,6 +642,16 @@ def test_wazuh_sync_matches_hosts_and_vulnerabilities(client: TestClient, csrf_h
     data = client.get("/api/v1/kpis/overview").json()
     assert data["open_vulnerabilities"]["value"] == 1
     assert data["open_high_vulnerabilities"]["value"] == 1
+
+    # Wazuh is a detection source, not the owner of local remediation state.
+    with session_scope() as db:
+        finding = db.query(models.PatchFinding).one()
+        finding.status = "resolved"
+    with session_scope() as db:
+        wazuh_service.sync_vulnerabilities(db, client=FakeWazuhClient())
+    with session_scope() as db:
+        finding = db.query(models.PatchFinding).one()
+        assert finding.status == "resolved"
 
 
 class FakeUyuniClient:

@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Query, Session
 
 from .. import models
 from ..config import get_settings
@@ -17,6 +17,22 @@ from . import audit_service, inventory_service, playbook_service
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+# These playbooks post results back through the API. A check-mode run would
+# skip the install and the uri callback, producing a misleading success.
+CHECK_MODE_UNSUPPORTED_PLAYBOOKS = {
+    "patch-security.yml",
+    "patch-verify.yml",
+    "livepatch-check.yml",
+    "openscap-scan.yml",
+    "openscap-remediate.yml",
+    "compliance-verify.yml",
+}
+
+
+def is_truthy(value: object) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def resolve_targets(
@@ -63,6 +79,11 @@ def create_deployment(
         raise NotFoundError("playbook not found")
     if not playbook.is_allowlisted:
         raise DomainError("playbook is not allowlisted")
+    if payload.check_mode and playbook.filename in CHECK_MODE_UNSUPPORTED_PLAYBOOKS:
+        raise DomainError(
+            f"check mode is not supported for {playbook.filename}; "
+            "launch it without check mode"
+        )
 
     targets = resolve_targets(
         db,
@@ -89,6 +110,8 @@ def create_deployment(
         "linsec_env": environment.name,
         **payload.extra_vars,
     }
+    if payload.group:
+        extra_vars["linsec_target_group"] = payload.group
     if payload.check_mode:
         extra_vars["linsec_check_mode"] = "true"
     deployment = models.Deployment(
@@ -206,10 +229,19 @@ def retry_deployment(
 ) -> models.Deployment:
     if deployment.status not in {"failed", "cancelled"}:
         raise DomainError("only failed or cancelled deployments can be retried")
+    extra_vars = {
+        key: value
+        for key, value in deployment.extra_vars.items()
+        if key not in {"linsec_env", "linsec_check_mode"}
+    }
+    group = extra_vars.pop("linsec_target_group", None)
     payload = DeploymentCreate(
         environment=deployment.environment_name,
         playbook=deployment.playbook_name,
         hosts=[target.host_name for target in deployment.targets],
+        group=group,
+        check_mode=is_truthy(deployment.extra_vars.get("linsec_check_mode")),
+        extra_vars=extra_vars,
     )
     return create_deployment(db, payload=payload, actor=actor)
 
@@ -221,6 +253,18 @@ def get_deployment(db: Session, deployment_id: str) -> models.Deployment:
     return deployment
 
 
+def _with_status(
+    query: Query[models.Deployment], status: str | None
+) -> Query[models.Deployment]:
+    """Accept a single status or a comma-separated list of statuses."""
+    if not status:
+        return query
+    statuses = [item.strip() for item in status.split(",") if item.strip()]
+    if not statuses:
+        return query
+    return query.filter(models.Deployment.status.in_(statuses))
+
+
 def list_deployments(
     db: Session,
     *,
@@ -228,15 +272,17 @@ def list_deployments(
     offset: int = 0,
     status: str | None = None,
 ) -> list[models.Deployment]:
-    query = db.query(models.Deployment)
-    if status:
-        query = query.filter(models.Deployment.status == status)
+    query = _with_status(db.query(models.Deployment), status)
     return (
         query.order_by(models.Deployment.created_at.desc())
         .offset(offset)
         .limit(limit)
         .all()
     )
+
+
+def count_deployments(db: Session, *, status: str | None = None) -> int:
+    return _with_status(db.query(models.Deployment), status).count()
 
 
 def target_names(deployment: models.Deployment) -> list[str]:

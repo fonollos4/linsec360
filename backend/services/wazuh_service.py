@@ -506,7 +506,12 @@ def sync_vulnerabilities(
                 record.severity = vulnerability["severity"]
                 record.current_version = vulnerability.get("current_version")
                 record.fixed_version = vulnerability.get("fixed_version")
-                record.status = vulnerability.get("status", "open")
+                # Wazuh 4.12 state documents do not carry remediation status.
+                # Keep a locally resolved or reboot-pending finding as-is so a
+                # later sync cannot reopen a patch we already applied.
+                reported_status = vulnerability.get("status", "open")
+                if reported_status != "open" or record.status == "open":
+                    record.status = reported_status
                 updated += 1
     db.commit()
     return {

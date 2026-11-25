@@ -211,16 +211,24 @@ therefore cannot occur with the current integration.
   openings and closures are written to the audit log. The nginx location in
   `web/snippets/linsec-locations.conf` handles the WebSocket upgrade.
 - Long running deployments are tracked from `/deployments`, its SSE feed, and
-  detailed logs. The UI refreshes compliance, patch, KPI and host state when a
-  job reaches a terminal status.
+  detailed logs. The history is paginated (25 runs per page), resets scroll on
+  navigation, and polls only while a job is queued or running. The UI refreshes
+  compliance, patch, KPI and host state when a job reaches a terminal status.
 - The Compliance page provides the three-step OpenSCAP flow: scan, remediate,
   verify. The selected profile is passed to every step. Remediation excludes
   SSH-cutting rules and does not open Wazuh ports `1514`/`1515`; reports are
   written under `/var/log/linsec360/` on the target.
 - The Patching page lets the operator select individual findings for a host,
   apply targeted packages with `patch-security.yml`, then verify with
-  `patch-verify.yml`. Reboots remain manual unless `patch_reboot_allowed=true`
-  is explicitly supplied as an extra variable.
+  `patch-verify.yml`. Findings are sent as package/CVE/fixed-version tuples so
+  the reported result updates the exact finding that was selected. Result
+  callbacks run on the controller, where the worker-owned API URL is reachable.
+  Verification only resolves a finding when the measured package version meets
+  the fixed version; Wazuh sync refreshes detection data but never reopens a
+  locally resolved finding. Check mode is rejected for playbooks that ingest
+  results, and retrying a deployment preserves its targets and extra variables.
+  Reboots remain manual unless `patch_reboot_allowed=true` is explicitly
+  supplied as an extra variable.
 
 There is no fingerprint approval screen. Legacy fingerprint endpoints remain
 importable for compatibility but are not used by the UI, connection tests, or

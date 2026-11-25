@@ -712,6 +712,8 @@ td strong { color: var(--ink); font-weight: 600; }
 .segmented { display: inline-flex; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
 .segmented button { height: 30px; padding: 0 12px; border: 0; border-radius: 7px; color: var(--muted); background: transparent; font-size: 12px; font-weight: 600; }
 .segmented button.active { color: var(--ink); background: #fff; box-shadow: var(--shadow-xs); }
+.pagination { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 14px 20px 18px; color: var(--muted); font-size: 12px; }
+.pagination > div { display: flex; gap: 8px; }
 
 /* ------------------------------------------------------------------ */
 /* Detail views / logs / timeline                                      */

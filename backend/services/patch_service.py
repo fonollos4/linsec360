@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -36,6 +38,22 @@ def list_findings(
         .limit(limit)
         .all()
     )
+
+
+def _version_at_least(installed: str, expected: str) -> bool:
+    """Compare dotted versions without adding a dependency to the stack."""
+
+    def parts(value: str) -> tuple[object, ...]:
+        return tuple(
+            int(part) if part.isdigit() else part
+            for part in re.split(r"[^0-9A-Za-z]+", value)
+            if part
+        )
+
+    try:
+        return parts(installed) >= parts(expected)
+    except TypeError:
+        return installed == expected
 
 
 def ingest_results(
@@ -77,11 +95,20 @@ def ingest_results(
 
         reboot_required = bool(check.get("reboot_required"))
         applied = bool(check.get("applied"))
-        verified = bool(check.get("verified"))
+        installed_version = check.get("installed_version") or ""
+        expected = check.get("fixed_version") or next(
+            (record.fixed_version for record in records if record.fixed_version), ""
+        )
+        version_ok = not (installed_version and expected) or _version_at_least(
+            installed_version, str(expected)
+        )
+        verified = bool(check.get("verified")) and bool(installed_version) and version_ok
+        # An install report cannot close a finding when the measured version is
+        # still below the fixed version we are remediating.
+        applied = applied and version_ok
         status = "open"
         if applied or verified:
             status = "reboot_required" if reboot_required else "resolved"
-        installed_version = check.get("installed_version")
         for record in records:
             if installed_version:
                 record.current_version = installed_version

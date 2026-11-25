@@ -574,6 +574,7 @@ class PatchResultCheckIn(BaseModel):
     package: str = Field(min_length=1, max_length=255)
     cve: str = Field(default="", max_length=64)
     installed_version: str | None = Field(default=None, max_length=128)
+    fixed_version: str | None = Field(default=None, max_length=128)
     applied: bool = False
     verified: bool = False
     reboot_required: bool = False

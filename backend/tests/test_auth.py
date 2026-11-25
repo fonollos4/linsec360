@@ -163,16 +163,17 @@ def test_provisioned_automation_token_is_hashed_and_revocable(
     client: TestClient,
 ):
     plaintext = "linsec_automation_test_token"
+    name = "automation-ingest-test"
     with session_scope() as db:
         provision_api_token(
             db,
             plaintext=plaintext,
-            name="automation-ingest",
+            name=name,
             username="linsec-automation",
         )
         record = (
             db.query(models.ApiToken)
-            .filter(models.ApiToken.name == "automation-ingest")
+            .filter(models.ApiToken.name == name)
             .one()
         )
         assert record.token_hash == hash_api_token(plaintext)
@@ -184,7 +185,7 @@ def test_provisioned_automation_token_is_hashed_and_revocable(
     with session_scope() as db:
         record = (
             db.query(models.ApiToken)
-            .filter(models.ApiToken.name == "automation-ingest")
+            .filter(models.ApiToken.name == name)
             .one()
         )
         revoke_api_token(db, record)

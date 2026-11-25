@@ -1,5 +1,29 @@
 const API_PREFIX = '/api/v1'
 
+type QueryValue = string | number | boolean | null | undefined
+
+function withQuery(path: string, params: Record<string, QueryValue>): string {
+  const search = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== '') search.set(key, String(value))
+  }
+  const query = search.toString()
+  return query ? `${path}?${query}` : path
+}
+
+async function failOnError(response: Response, path: string): Promise<void> {
+  if (response.ok) return
+  if (response.status === 401 && path !== '/auth/login') {
+    window.dispatchEvent(new CustomEvent('linsec:unauthorized'))
+  }
+  let message = response.statusText
+  try {
+    const payload = await response.json() as { error?: { message?: string }; detail?: string }
+    message = payload.error?.message ?? payload.detail ?? message
+  } catch {}
+  throw new Error(message)
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   headers.set('Accept', 'application/json')
@@ -9,16 +33,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers,
   })
-  if (!response.ok) {
-    if (response.status === 401 && path !== '/auth/login') {
-      window.dispatchEvent(new CustomEvent('linsec:unauthorized'))
-    }
-    let message = response.statusText
-    try { const payload = await response.json() as { error?: { message?: string }; detail?: string }; message = payload.error?.message ?? payload.detail ?? message } catch {}
-    throw new Error(message)
-  }
+  await failOnError(response, path)
   if (response.status === 204) return undefined as T
   return response.json() as Promise<T>
+}
+
+async function requestPage<T>(path: string, init?: RequestInit): Promise<{ items: T[]; total: number }> {
+  const headers = new Headers(init?.headers)
+  headers.set('Accept', 'application/json')
+  const response = await fetch(`${API_PREFIX}${path}`, {
+    credentials: 'include',
+    ...init,
+    headers,
+  })
+  await failOnError(response, path)
+  const items = response.status === 204 ? [] : await response.json() as T[]
+  const header = response.headers.get('X-Total-Count')
+  const reported = header === null ? Number.NaN : Number(header)
+  return { items, total: Number.isFinite(reported) ? reported : items.length }
 }
 
 async function mutating<T>(path: string, method: string, body?: object): Promise<T> {
@@ -83,7 +115,7 @@ export interface HostPosture {
   host_name: string
   compliance: { id: string; profile: string; status: string; score: number | null; created_at: string } | null
   hardening: Array<{ id: number; category: string; control: string; status: string; checked_at: string }>
-  patch_findings: Array<{ id: number; package: string; cve: string; severity: string; status: string; source: string; reboot_required: boolean }>
+  patch_findings: Array<{ id: number; package: string; cve: string; severity: string; status: string; source: string; fixed_version: string | null; reboot_required: boolean }>
   livepatch: { livepatch_state: string; patch_available: boolean; exposure_days: number | null; kernel: string } | null
   agent: { id: string; name: string; status: string; last_keep_alive: string | null } | null
 }
@@ -218,7 +250,8 @@ export const api = {
     request<Array<{ value: number | null; status: string; captured_at: string }>>(
       `/kpis/history?metric=${encodeURIComponent(metric)}&days=30`,
     ),
-  hosts: () => request<Host[]>('/hosts'),
+  hosts: (params: { limit?: number; offset?: number; q?: string; environment?: string; status?: string } = {}) =>
+    request<Host[]>(withQuery('/hosts', params)),
   host: (id: number) => request<Host>(`/hosts/${id}`),
   hostPosture: (id: number) => request<HostPosture>(`/hosts/${id}/posture`),
   ansiblePublicKey: () => request<SSHPublicKey>('/hosts/ssh/public-key'),
@@ -249,7 +282,8 @@ export const api = {
     mutating<PlaybookDetail>(`/playbooks/${encodeURIComponent(filename)}`, 'PUT', body),
   deletePlaybook: (filename: string) =>
     mutating<{ message: string }>(`/playbooks/${encodeURIComponent(filename)}`, 'DELETE'),
-  deployments: () => request<Deployment[]>('/deployments'),
+  deployments: (params: { limit?: number; offset?: number; status?: string } = {}) =>
+    requestPage<Deployment>(withQuery('/deployments', params)),
   deployment: (id: string) => request<Deployment>(`/deployments/${id}`),
   deploymentEvents: (id: string) => request<Array<{ event: string; level: string; message: string; created_at: string }>>(`/deployments/${id}/events`),
   deploymentLog: async (id: string) => {
