@@ -1,0 +1,23 @@
+---
+# SELinux (RedHat/Rocky/AlmaLinux).
+hardening_mac_selinux_packages:
+  - libselinux-python3
+  - libselinux-utils
+  - policycoreutils-python-utils
+hardening_mac_selinux_legacy_packages:
+  - libselinux-python
+  - libselinux-utils
+  - policycoreutils-python
+hardening_mac_selinux_config: /etc/selinux/config
+hardening_mac_selinux_policy: targeted
+hardening_mac_selinux_mode: enforcing
+
+# AppArmor (Ubuntu/Debian).
+hardening_mac_apparmor_packages:
+  - apparmor
+  - apparmor-utils
+hardening_mac_apparmor_service: apparmor
+hardening_mac_apparmor_disable_dir: /etc/apparmor.d/disable
+# Profiles that must never be disabled. Missing profiles are ignored.
+hardening_mac_apparmor_critical_profiles:
+  - usr.sbin.sshd

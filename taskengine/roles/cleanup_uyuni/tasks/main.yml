@@ -1,0 +1,45 @@
+---
+- name: Read the current service state before removing Salt agents
+  ansible.builtin.service_facts:
+
+- name: Stop and disable legacy Salt/Uyuni services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop: "{{ cleanup_uyuni_services }}"
+  when: "item ~ '.service' in ansible_facts.services"
+  notify: refresh package cache after Uyuni cleanup
+
+- name: Remove Salt/Uyuni client packages
+  ansible.builtin.package:
+    name: "{{ cleanup_uyuni_packages }}"
+    state: absent
+  notify: refresh package cache after Uyuni cleanup
+
+- name: Find Uyuni/Spacewalk/RHN repository definitions
+  ansible.builtin.find:
+    paths: "{{ cleanup_uyuni_repository_dirs }}"
+    patterns: "{{ cleanup_uyuni_repo_patterns }}"
+    file_type: file
+  register: cleanup_uyuni_repository_files
+
+- name: Remove Uyuni/Spacewalk/RHN repository definitions
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ cleanup_uyuni_repository_files.files }}"
+  notify: refresh package cache after Uyuni cleanup
+
+- name: Remove Salt/Uyuni configuration and cache directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ cleanup_uyuni_paths }}"
+
+- name: Keep SSH reachable after agent removal
+  ansible.builtin.service:
+    name: "{{ cleanup_uyuni_ssh_service }}"
+    state: started
+    enabled: true
+  when: cleanup_uyuni_ensure_ssh | bool

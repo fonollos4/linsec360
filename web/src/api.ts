@@ -103,9 +103,6 @@ export interface StackConfiguration {
   wazuh_api_url: string
   wazuh_indexer_url: string
   wazuh_dashboard_url: string
-  uyuni_api_url: string
-  uyuni_server: string
-  uyuni_server_port: number
 }
 export interface StackComponentState {
   key: string
@@ -118,7 +115,6 @@ export interface StackComponentState {
 }
 export interface IntegrationStatus {
   wazuh: IntegrationState
-  uyuni: IntegrationState
   ansible: IntegrationState
   stack: StackComponentState[]
 }
@@ -126,10 +122,6 @@ export interface WazuhSyncResult {
   agents: { agents: number; hosts: number; matched: number; unmatched: number }
   alerts: { fetched: number; created: number; updated: number }
   vulnerabilities: { hosts: number; created: number; updated: number }
-}
-export interface UyuniSyncResult {
-  systems: { systems: number; matched_hosts: number; created: number; updated: number }
-  errata: { systems: number; created: number; updated: number }
 }
 export interface Alert {
   id: number
@@ -155,15 +147,6 @@ export interface PatchFinding {
   source: string
   status: string
   reboot_required: boolean
-}
-export interface UyuniSystem {
-  id: number
-  host_id: number | null
-  host_name: string
-  uyuni_system_id: number
-  status: string
-  channels: string[]
-  last_sync: string | null
 }
 export interface ComplianceScan {
   id: string
@@ -304,8 +287,6 @@ export const api = {
   patchFindings: () => request<PatchFinding[]>('/patching/findings'),
   patchSummary: () => request<Record<string, unknown>>('/patching/summary'),
   syncWazuhPatches: () => mutating<Record<string, unknown>>('/patching/wazuh/sync', 'POST'),
-  syncUyuni: () => mutating<UyuniSyncResult>('/patching/uyuni/sync', 'POST'),
-  uyuniSystems: () => request<UyuniSystem[]>('/patching/uyuni'),
   resolvePatch: (id: number) => mutating<PatchFinding>(`/patching/findings/${id}/resolve`, 'POST'),
   alerts: () => request<Alert[]>('/alerts'),
   alertSummary: () => request<AlertSummary>('/alerts/summary'),
@@ -321,6 +302,6 @@ export const api = {
     mutating<StackConfiguration>('/integrations/config', 'PUT', body),
   resetStackConfiguration: () =>
     mutating<StackConfiguration>('/integrations/config', 'DELETE'),
-  testIntegration: (name: 'wazuh' | 'uyuni' | 'ansible') =>
+  testIntegration: (name: 'wazuh' | 'ansible') =>
     mutating<IntegrationState>(`/integrations/${name}/test`, 'POST'),
 }

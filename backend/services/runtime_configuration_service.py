@@ -17,17 +17,15 @@ SETTING_FIELDS = (
     "wazuh_api_url",
     "wazuh_indexer_url",
     "wazuh_dashboard_url",
-    "uyuni_api_url",
-    "uyuni_server",
-    "uyuni_server_port",
 )
 PORT_FIELDS = frozenset(
     {
         "wazuh_manager_agent_port",
         "wazuh_manager_enrollment_port",
-        "uyuni_server_port",
     }
 )
+# Rows written by the retired Uyuni configuration UI are removed on reset.
+LEGACY_SETTING_PREFIXES = ("uyuni_",)
 
 
 def effective_settings(db: Session, settings: Settings | None = None) -> Settings:
@@ -69,9 +67,6 @@ def read(db: Session) -> StackConfiguration:
         wazuh_api_url=_safe_endpoint(settings.wazuh_api_url),
         wazuh_indexer_url=_safe_endpoint(settings.wazuh_indexer_url),
         wazuh_dashboard_url=_safe_endpoint(settings.wazuh_dashboard_url),
-        uyuni_api_url=_safe_endpoint(settings.uyuni_api_url),
-        uyuni_server=settings.uyuni_server,
-        uyuni_server_port=settings.uyuni_server_port,
     )
 
 
@@ -95,8 +90,17 @@ def save(
 
 
 def reset(db: Session) -> StackConfiguration:
-    db.query(models.RuntimeSetting).filter(
-        models.RuntimeSetting.key.in_(SETTING_FIELDS)
-    ).delete(synchronize_session=False)
+    # Remove orphaned keys written before Uyuni was retired, then the current
+    # editable settings. `startswith` accepts a tuple of prefixes.
+    stale_keys = [
+        key
+        for (key,) in db.query(models.RuntimeSetting.key).all()
+        if key.startswith(LEGACY_SETTING_PREFIXES)
+    ]
+    keys_to_delete = set(stale_keys) | set(SETTING_FIELDS)
+    if keys_to_delete:
+        db.query(models.RuntimeSetting).filter(
+            models.RuntimeSetting.key.in_(keys_to_delete)
+        ).delete(synchronize_session=False)
     db.flush()
     return read(db)

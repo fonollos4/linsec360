@@ -1,0 +1,51 @@
+---
+# XCCDF profile and content. Override these for the compliance baseline used
+# in your environment. The audit command itself is deliberately unchanged:
+# oscap xccdf eval --profile <profile> --results <xml> --report <html> <ds>
+openscap_profile: xccdf_org.ssgproject.content_profile_standard
+openscap_datastream: ''
+openscap_datastream_dirs:
+  - /usr/share/xml/scap/ssg/content
+openscap_datastream_pattern: '*-ds.xml'
+openscap_result_id: "xccdf_org.open-scap_testresult_{{ openscap_profile }}"
+
+openscap_packages_redhat:
+  - openscap-scanner
+  - scap-security-guide
+openscap_packages_debian:
+  - openscap-scanner
+  - ssg-base
+
+# Reports are 0700/0600 because they describe the weaknesses of the host.
+openscap_log_dir: /var/log/linsec360
+openscap_before_xml: "{{ openscap_log_dir }}/oscap-before.xml"
+openscap_before_html: "{{ openscap_log_dir }}/oscap-before.html"
+openscap_after_xml: "{{ openscap_log_dir }}/oscap-after.xml"
+openscap_after_html: "{{ openscap_log_dir }}/oscap-after.html"
+openscap_raw_remediation: "{{ openscap_log_dir }}/oscap-remediation.raw.sh"
+openscap_remediation: "{{ openscap_log_dir }}/oscap-remediation.sh"
+openscap_status_log: "{{ openscap_log_dir }}/openscap-status.log"
+openscap_policy_path: /etc/linsec360/oscap-remediation-policy.json
+openscap_filter_bin: /usr/local/bin/linsec360-filter-oscap-remediation.py
+
+# Rule IDs never remediated automatically: they can disable SSH or interfere
+# with the Wazuh agent (ports 1514/1515). Command patterns are a second,
+# defence-in-depth gate applied to every generated fix line.
+openscap_denied_rule_patterns:
+  - 'sshd.*(disable|stop|mask)'
+  - '(disable|stop|mask).*sshd'
+  - 'service_sshd_disabled'
+  - '(firewall|iptables|nftables|ufw|firewalld)'
+  - 'wazuh'
+  - '1514'
+  - '1515'
+openscap_denied_command_patterns:
+  - 'systemctl\s+(stop|disable|mask)\s+sshd'
+  - 'service\s+sshd\s+stop'
+  - 'chkconfig\s+sshd\s+off'
+  - 'iptables\b'
+  - 'nft\b'
+  - 'firewall-cmd\b'
+  - 'ufw\b'
+  - '\b1514\b'
+  - '\b1515\b'

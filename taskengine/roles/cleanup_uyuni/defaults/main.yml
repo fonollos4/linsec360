@@ -1,0 +1,43 @@
+---
+# Services, packages and files left behind by a Uyuni/Salt control plane.
+cleanup_uyuni_services:
+  - salt-minion
+  - venv-salt-minion
+  - uyuni-check
+
+cleanup_uyuni_packages:
+  - salt
+  - salt-minion
+  - salt-common
+  - salt-python3
+  - python3-salt
+  - venv-salt-minion
+  - spacewalk-check
+  - spacewalk-client-setup
+  - spacewalk-client-tools
+  - rhn-check
+  - rhn-client-tools
+  - rhn-setup
+  - rhncfg
+  - rhncfg-actions
+  - rhncfg-client
+  - yum-rhn-plugin
+
+cleanup_uyuni_paths:
+  - /etc/salt
+  - /var/cache/salt
+  - /etc/venv-salt-minion
+  - /var/cache/venv-salt-minion
+
+cleanup_uyuni_repository_dirs:
+  - /etc/yum.repos.d
+  - /etc/apt/sources.list.d
+
+cleanup_uyuni_repo_patterns:
+  - '*uyuni*'
+  - '*spacewalk*'
+  - '*rhn*'
+
+# Never leave the management channel down after removing automation agents.
+cleanup_uyuni_ensure_ssh: true
+cleanup_uyuni_ssh_service: "{{ 'sshd' if ansible_os_family == 'RedHat' else 'ssh' }}"

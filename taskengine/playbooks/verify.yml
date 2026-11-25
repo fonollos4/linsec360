@@ -1,0 +1,157 @@
+---
+# Read-only validation of the baseline applied by site.yml.
+#
+#   cd taskengine && ansible-playbook -i inventories/production/hosts.yml playbooks/verify.yml
+#
+# The playbook fails with an explicit assertion message when a required
+# control is missing; it never modifies the managed host.
+- name: Verify the LinSec360 hardening and patching baseline
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    linsec_legacy_process_pattern: 'salt-minion|venv-salt-minion|uyuni-check'
+    linsec_legacy_packages:
+      - salt
+      - salt-minion
+      - salt-common
+      - venv-salt-minion
+      - spacewalk-check
+      - spacewalk-client-setup
+      - spacewalk-client-tools
+      - rhn-check
+      - rhn-client-tools
+      - rhn-setup
+      - yum-rhn-plugin
+    linsec_ssh_service: "{{ 'sshd' if ansible_os_family == 'RedHat' else 'ssh' }}"
+    linsec_update_timer: >-
+      {{ 'dnf-automatic.timer' if ansible_os_family == 'RedHat'
+         else 'apt-daily-upgrade.timer' }}
+  tasks:
+    - name: Check that no Salt or Uyuni process is running
+      ansible.builtin.command:
+        cmd: "pgrep -af '{{ linsec_legacy_process_pattern }}'"
+      register: linsec_legacy_processes
+      changed_when: false
+      failed_when: false
+
+    - name: Load installed package facts
+      ansible.builtin.package_facts:
+        manager: auto
+
+    - name: Assert that Salt and Uyuni packages are absent
+      ansible.builtin.assert:
+        that:
+          - linsec_legacy_processes.stdout | trim == ''
+          - >-
+            (linsec_legacy_packages
+             | intersect(ansible_facts.packages.keys() | list)
+             | length) == 0
+        fail_msg: >-
+          Legacy Salt/Uyuni processes or packages are still present on
+          {{ inventory_hostname }}.
+
+    - name: Check mandatory access control (RedHat family)
+      when: ansible_os_family == 'RedHat'
+      block:
+        - name: Read the SELinux enforcement mode
+          ansible.builtin.command: getenforce
+          register: linsec_selinux_mode
+          changed_when: false
+          failed_when: false
+
+        - name: Assert that SELinux is enforcing with the targeted policy
+          ansible.builtin.assert:
+            that:
+              - linsec_selinux_mode.rc == 0
+              - linsec_selinux_mode.stdout | trim == 'Enforcing'
+            fail_msg: >-
+              SELinux must be in Enforcing mode on {{ inventory_hostname }}.
+
+    - name: Check mandatory access control (Debian family)
+      when: ansible_os_family == 'Debian'
+      block:
+        - name: Read the AppArmor status
+          ansible.builtin.command: aa-status --enabled
+          register: linsec_apparmor_status
+          changed_when: false
+          failed_when: false
+
+        - name: Assert that AppArmor is active
+          ansible.builtin.assert:
+            that: linsec_apparmor_status.rc == 0
+            fail_msg: >-
+              AppArmor must be enabled on {{ inventory_hostname }}.
+
+    - name: Check the post-remediation OpenSCAP report
+      ansible.builtin.stat:
+        path: /var/log/linsec360/oscap-after.html
+      register: linsec_oscap_after
+
+    - name: Assert that the OpenSCAP HTML report is usable
+      ansible.builtin.assert:
+        that:
+          - linsec_oscap_after.stat.exists
+          - linsec_oscap_after.stat.size | int > 0
+        fail_msg: >-
+          /var/log/linsec360/oscap-after.html is missing or empty on
+          {{ inventory_hostname }}.
+
+    - name: Check the Wazuh agent service
+      ansible.builtin.command: systemctl is-active wazuh-agent.service
+      register: linsec_wazuh_agent
+      changed_when: false
+      failed_when: false
+
+    - name: Assert that the Wazuh agent is active
+      ansible.builtin.assert:
+        that: linsec_wazuh_agent.stdout | trim == 'active'
+        fail_msg: >-
+          wazuh-agent.service is not active on {{ inventory_hostname }}.
+
+    - name: Check the SSH service
+      ansible.builtin.command: "systemctl is-active {{ linsec_ssh_service }}.service"
+      register: linsec_ssh_state
+      changed_when: false
+      failed_when: false
+
+    - name: Assert that SSH was not cut
+      ansible.builtin.assert:
+        that: linsec_ssh_state.stdout | trim == 'active'
+        fail_msg: >-
+          {{ linsec_ssh_service }} must remain active on
+          {{ inventory_hostname }}.
+
+    - name: Check the Ubuntu Pro livepatch service
+      when: ansible_distribution == 'Ubuntu'
+      block:
+        - name: Read the livepatch service state
+          ansible.builtin.command: systemctl is-active canonical-livepatch.service
+          register: linsec_livepatch_state
+          changed_when: false
+          failed_when: false
+
+        - name: Assert that livepatch is active
+          ansible.builtin.assert:
+            that: linsec_livepatch_state.stdout | trim == 'active'
+            fail_msg: >-
+              canonical-livepatch.service is not active on
+              {{ inventory_hostname }}.
+
+    - name: Check the automatic update timer
+      ansible.builtin.command: "systemctl {{ item }} {{ linsec_update_timer }}"
+      loop:
+        - is-active
+        - is-enabled
+      register: linsec_update_timer_state
+      changed_when: false
+      failed_when: false
+
+    - name: Assert that the automatic update timer is active and enabled
+      ansible.builtin.assert:
+        that:
+          - linsec_update_timer_state.results[0].stdout | trim == 'active'
+          - linsec_update_timer_state.results[1].stdout | trim == 'enabled'
+        fail_msg: >-
+          {{ linsec_update_timer }} must be active and enabled on
+          {{ inventory_hostname }}.

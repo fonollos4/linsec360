@@ -130,53 +130,23 @@ def test_openscap_playbook_stages_tailoring_file_on_the_target():
     assert "{{ openscap_tailoring_source }}" not in command
 
 
-def test_uyuni_register_playbook_uses_the_worker_injected_server():
-    playbook_path = (
-        Path(__file__).resolve().parents[2]
-        / "taskengine"
-        / "playbooks"
-        / "uyuni-register.yml"
-    )
-    play = yaml.safe_load(playbook_path.read_text(encoding="utf-8"))[0]
+def test_uyuni_registration_playbook_is_retired():
+    root = Path(__file__).resolve().parents[2] / "taskengine"
+    assert not (root / "playbooks" / "uyuni-register.yml").exists()
 
-    assert play["vars"]["uyuni_server"] == (
-        "{{ linsec_uyuni_server | default('', true) }}"
-    )
-    assert "linsec_uyuni_server_port" in play["vars"]["uyuni_server_port"]
-    assert "8443" not in repr(play)
-    register_task = next(
-        task
-        for task in play["tasks"]
-        if task.get("name") == "Register the host with Uyuni"
-    )
-    assert register_task["environment"] == {
-        "MGR_SERVER_HOSTNAME": "{{ uyuni_server }}",
-        "ACTIVATION_KEYS": "{{ uyuni_activation_key }}",
-    }
-    # The generated bootstrap script resets CLIENT_REPOS_ROOT itself, so it
-    # must be patched in the script instead of passed through the environment.
-    assert "CLIENT_REPOS_ROOT" not in register_task["environment"]
-    task_names = {task.get("name") for task in play["tasks"]}
-    assert (
-        "Make the bootstrap repository URL use the configured HTTPS port" in task_names
-    )
-    assert "Make the bootstrap script reuse the pre-installed Salt bundle" in task_names
-    # Uyuni does not always host a bootstrap repository; fall back to the
-    # official public client tools repository for RedHat-family targets.
-    fallback_repo = play["vars"]["uyuni_client_tools_repo"]
-    assert "download.opensuse.org" in fallback_repo
-    assert "ansible_distribution_major_version" in fallback_repo
-    assert "ansible_os_family == 'RedHat'" in fallback_repo
-    repo_task = next(
-        task
-        for task in play["tasks"]
-        if task.get("name") == "Add the public Uyuni client tools repository"
-    )
-    assert repo_task["ansible.builtin.yum_repository"]["baseurl"] == (
-        "{{ uyuni_client_tools_repo }}"
-    )
-    # The generated bootstrap script reads env vars, not CLI flags.
-    assert "--server" not in register_task["ansible.builtin.command"]
+    site = yaml.safe_load(
+        (root / "playbooks" / "site.yml").read_text(encoding="utf-8")
+    )[0]
+    roles = [role.get("role") if isinstance(role, dict) else role for role in site["roles"]]
+    assert roles == [
+        "cleanup_uyuni",
+        "hardening_mac",
+        "hardening_openscap",
+        "patching_option2",
+    ]
+    assert (root / "playbooks" / "verify.yml").is_file()
+    for role in roles:
+        assert (root / "roles" / role / "tasks" / "main.yml").is_file()
 
 
 def test_bundled_playbook_vars_do_not_reference_themselves():
@@ -762,9 +732,6 @@ def test_stack_configuration_is_persisted_and_resettable(
         "wazuh_api_url": "https://siem.example:55000",
         "wazuh_indexer_url": "https://indexer.example:9200",
         "wazuh_dashboard_url": "https://dashboard.example:5601",
-        "uyuni_api_url": "https://uyuni.example/rpc/api",
-        "uyuni_server": "uyuni.example",
-        "uyuni_server_port": 8443,
     }
 
     invalid_payload = {**payload, "wazuh_api_url": "https://user:secret@siem.example"}
@@ -791,7 +758,7 @@ def test_stack_configuration_is_persisted_and_resettable(
     components = {item["key"]: item for item in response.json()["stack"]}
     assert components["wazuh-manager"]["endpoint"].startswith("TCP 192.0.2.40:1514")
     assert "1516" in components["wazuh-manager"]["endpoint"]
-    assert components["uyuni-server"]["endpoint"] == "uyuni.example:8443"
+    assert "uyuni" not in components
 
     response = client.delete(
         "/api/v1/integrations/config",
@@ -840,7 +807,6 @@ def test_viewer_cannot_change_stack_configuration(client: TestClient, csrf_heade
             "wazuh_api_url": "",
             "wazuh_indexer_url": "",
             "wazuh_dashboard_url": "",
-            "uyuni_api_url": "",
         },
     )
     assert response.status_code == 403

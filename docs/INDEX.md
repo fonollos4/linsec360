@@ -4,7 +4,8 @@
 
 - [Implementation plan](architecture/implementation-plan.md)
 - [Product security workflow](architecture/product-security-workflow.md)
-- [Uyuni deployment decision](architecture/uyuni-deployment.md)
+- [Taskengine hardening and patching baseline](architecture/taskengine-automation.md)
+- [Uyuni deployment decision (historical)](architecture/uyuni-deployment.md)
 - [FastAPI backend](architecture/v2-backend.md)
 
 ## Operations

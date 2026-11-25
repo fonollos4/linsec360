@@ -1,0 +1,14 @@
+---
+- name: refresh package cache after Uyuni cleanup
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+  listen: refresh package cache after Uyuni cleanup
+  when: ansible_os_family == 'Debian'
+
+- name: refresh dnf cache after Uyuni cleanup
+  ansible.builtin.dnf:
+    update_cache: true
+  listen: refresh package cache after Uyuni cleanup
+  changed_when: false
+  when: ansible_os_family == 'RedHat'

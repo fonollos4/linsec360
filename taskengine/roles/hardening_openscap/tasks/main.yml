@@ -1,0 +1,134 @@
+---
+- name: Install OpenSCAP scanner and security content
+  ansible.builtin.package:
+    name: "{{ openscap_packages_redhat if ansible_os_family == 'RedHat' else openscap_packages_debian }}"
+    state: present
+
+- name: Locate the SCAP data stream when none was provided
+  ansible.builtin.find:
+    paths: "{{ openscap_datastream_dirs }}"
+    patterns: "{{ openscap_datastream_pattern }}"
+    file_type: file
+  register: openscap_datastream_search
+  when: not openscap_datastream
+
+- name: Use the first discovered data stream
+  ansible.builtin.set_fact:
+    openscap_datastream: "{{ openscap_datastream_search.files[0].path }}"
+  when:
+    - not openscap_datastream
+    - openscap_datastream_search.files | length > 0
+
+- name: Fail clearly when no SCAP data stream is available
+  ansible.builtin.fail:
+    msg: >-
+      No SCAP data stream found. Install scap-security-guide (RedHat family)
+      or ssg-base (Debian family), or set openscap_datastream explicitly.
+  when: not openscap_datastream
+
+- name: Create the OpenSCAP report directory
+  ansible.builtin.file:
+    path: "{{ openscap_log_dir }}"
+    state: directory
+    mode: '0700'
+
+- name: Create the LinSec360 configuration directory
+  ansible.builtin.file:
+    path: "{{ openscap_policy_path | dirname }}"
+    state: directory
+    mode: '0755'
+
+- name: Run the initial OpenSCAP audit
+  ansible.builtin.command:
+    cmd: >-
+      oscap xccdf eval --profile {{ openscap_profile }}
+      --results {{ openscap_before_xml }}
+      --report {{ openscap_before_html }}
+      {{ openscap_datastream }}
+  register: openscap_before
+  changed_when: false
+  # oscap: 0 = all rules pass, 1 = evaluation error, 2 = failed/unknown rules.
+  failed_when: openscap_before.rc not in [0, 2]
+
+- name: Deploy the remediation filter
+  ansible.builtin.copy:
+    src: filter_oscap_remediation.py
+    dest: "{{ openscap_filter_bin }}"
+    mode: '0755'
+
+- name: Deploy the remediation exclusion policy
+  ansible.builtin.template:
+    src: oscap-remediation-policy.json.j2
+    dest: "{{ openscap_policy_path }}"
+    mode: '0600'
+
+- name: Generate the raw remediation script from the failed rules
+  ansible.builtin.command:
+    cmd: >-
+      oscap xccdf generate fix --fix-type bash
+      --result-id {{ openscap_result_id }}
+      --output {{ openscap_raw_remediation }}
+      {{ openscap_before_xml }}
+  register: openscap_raw_fix
+  changed_when: false
+  failed_when: openscap_raw_fix.rc != 0
+
+- name: Filter the generated remediation
+  ansible.builtin.command:
+    argv:
+      - "{{ openscap_filter_bin }}"
+      - --results
+      - "{{ openscap_before_xml }}"
+      - --fix
+      - "{{ openscap_raw_remediation }}"
+      - --output
+      - "{{ openscap_remediation }}"
+      - --policy
+      - "{{ openscap_policy_path }}"
+  register: openscap_filter
+  changed_when: false
+  failed_when: openscap_filter.rc != 0
+
+- name: Parse the remediation filter summary
+  ansible.builtin.set_fact:
+    openscap_filter_result: "{{ openscap_filter.stdout | from_json }}"
+
+- name: Apply only the filtered remediation
+  ansible.builtin.command:
+    cmd: "bash {{ openscap_remediation }}"
+  register: openscap_remediation_run
+  when: openscap_filter_result.safe_to_apply | bool
+  changed_when: true
+  failed_when: openscap_remediation_run.rc != 0
+
+- name: Ensure SSH remains available after remediation
+  ansible.builtin.service:
+    name: "{{ 'sshd' if ansible_os_family == 'RedHat' else 'ssh' }}"
+    state: started
+    enabled: true
+
+- name: Re-scan the host after remediation
+  ansible.builtin.command:
+    cmd: >-
+      oscap xccdf eval --profile {{ openscap_profile }}
+      --results {{ openscap_after_xml }}
+      --report {{ openscap_after_html }}
+      {{ openscap_datastream }}
+  register: openscap_after
+  changed_when: false
+  failed_when: openscap_after.rc not in [0, 2]
+
+- name: Write the OpenSCAP status log consumed by Wazuh
+  ansible.builtin.copy:
+    content: |
+      host={{ inventory_hostname }}
+      profile={{ openscap_profile }}
+      datastream={{ openscap_datastream }}
+      before_rc={{ openscap_before.rc }}
+      after_rc={{ openscap_after.rc }}
+      failed_rules_before={{ openscap_filter_result.failed_rules }}
+      excluded_rules={{ openscap_filter_result.excluded_rules }}
+      applied_rules={{ openscap_filter_result.included_rules }}
+      report={{ openscap_after_html }}
+    dest: "{{ openscap_status_log }}"
+    mode: '0600'

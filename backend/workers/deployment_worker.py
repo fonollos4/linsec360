@@ -144,9 +144,10 @@ def _deployment_passwords(
 def _ansible_environment(settings) -> dict[str, str]:
     """Environment that lets materialized playbooks find roles and config.
 
-    Playbooks are materialized under ``var/playbooks`` while roles and the
-    hardening/OpenSCAP assets live in the repository, so both are injected
-    explicitly instead of relying on whatever ansible.cfg is installed.
+    Playbooks are materialized under ``var/playbooks`` while the taskengine
+    roles and hardening/OpenSCAP assets live in the repository, so both are
+    injected explicitly instead of relying on whatever ansible.cfg is
+    installed.
     """
     environment = os.environ.copy()
     roles_path = os.pathsep.join(
@@ -297,8 +298,6 @@ def run_deployment(deployment_id: str) -> None:
                     "linsec_wazuh_manager_enrollment_port": (
                         settings.wazuh_manager_enrollment_port
                     ),
-                    "linsec_uyuni_server": settings.effective_uyuni_server,
-                    "linsec_uyuni_server_port": settings.uyuni_server_port,
                     **deployment.extra_vars,
                 },
                 settings.log_dir,

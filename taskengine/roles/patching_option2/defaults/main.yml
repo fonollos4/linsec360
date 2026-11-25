@@ -1,0 +1,28 @@
+---
+# Option 2 patching: native distribution automation, supervised by Wazuh.
+# The Ubuntu Pro token is expected as the Ansible Vault variable
+# `ubuntu_pro_token`; it is never stored in a role default or in a log.
+patching_ubuntu_pro_token: "{{ ubuntu_pro_token | default('') }}"
+
+patching_redhat_packages:
+  - dnf-automatic
+patching_debian_packages:
+  - unattended-upgrades
+  - apt-listchanges
+
+patching_dnf_automatic_conf: /etc/dnf/automatic.conf
+patching_unattended_upgrades_conf: /etc/apt/apt.conf.d/50unattended-upgrades
+patching_auto_upgrades_conf: /etc/apt/apt.conf.d/20auto-upgrades
+patching_status_script: /usr/local/bin/check_patching_status.sh
+
+patching_update_timer: >-
+  {{ 'dnf-automatic.timer' if ansible_os_family == 'RedHat'
+     else 'apt-daily-upgrade.timer' }}
+patching_ssh_service: "{{ 'sshd' if ansible_os_family == 'RedHat' else 'ssh' }}"
+
+# Reboots are never forced by this role. Enable explicit scheduling only with
+# a time outside the configured working hours.
+patching_work_hours_start: '08:00'
+patching_work_hours_end: '18:00'
+patching_automatic_reboot: false
+patching_reboot_time: '03:00'

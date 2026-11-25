@@ -405,7 +405,7 @@ function Login({ onLogin }: { onLogin: () => void }) {
             <ul className="login-features">
               <li><Play /> Déploiements Ansible traçables</li>
               <li><ShieldCheck /> Durcissement SELinux et OpenSCAP</li>
-              <li><Boxes /> Correctifs Uyuni et live patching</li>
+              <li><Boxes /> Correctifs de sécurité et live patching</li>
               <li><Radar /> Détection et réponse Wazuh</li>
             </ul>
           </div>
@@ -1387,9 +1387,7 @@ function Compliance() {
 function Patching() {
   const client = useQueryClient()
   const { data = [], isLoading, error } = useQuery({ queryKey: ['patch-findings'], queryFn: api.patchFindings })
-  const uyuniSystems = useQuery({ queryKey: ['uyuni-systems'], queryFn: api.uyuniSystems, retry: false })
   const syncWazuh = useMutation({ mutationFn: api.syncWazuhPatches, onSuccess: () => void client.invalidateQueries({ queryKey: ['patch-findings'] }) })
-  const syncUyuni = useMutation({ mutationFn: api.syncUyuni, onSuccess: () => { void client.invalidateQueries({ queryKey: ['patch-findings'] }); void client.invalidateQueries({ queryKey: ['uyuni-systems'] }) } })
   const resolve = useMutation({ mutationFn: api.resolvePatch, onSuccess: () => void client.invalidateQueries({ queryKey: ['patch-findings'] }) })
   if (isLoading) return <Loading label="Chargement des correctifs…" />
   if (error) return <div className="alert error">Impossible de charger les correctifs.</div>
@@ -1402,39 +1400,17 @@ function Patching() {
       <PageHeader
         eyebrow="Patching"
         title="Correctifs"
-        description="Vulnérabilités Wazuh, errata Uyuni et état du live patching noyau."
-        actions={(
-          <>
-            <button className="secondary" disabled={syncWazuh.isPending} onClick={() => syncWazuh.mutate()}><RefreshCw /> Synchroniser Wazuh</button>
-            <button className="secondary" disabled={syncUyuni.isPending} onClick={() => syncUyuni.mutate()}><RefreshCw />{syncUyuni.isPending ? 'Récupération…' : 'Récupérer depuis Uyuni'}</button>
-          </>
-        )}
+        description="Vulnérabilités Wazuh et état du live patching noyau."
+        actions={<button className="secondary" disabled={syncWazuh.isPending} onClick={() => syncWazuh.mutate()}><RefreshCw /> Synchroniser Wazuh</button>}
       />
       {syncWazuh.isError && <div className="alert error">{syncWazuh.error instanceof Error ? syncWazuh.error.message : 'Synchronisation Wazuh impossible.'}</div>}
-      {syncUyuni.isError && <div className="alert error">{syncUyuni.error instanceof Error ? syncUyuni.error.message : 'Synchronisation Uyuni impossible.'}</div>}
-      {syncUyuni.data && <div className="alert success">Uyuni : {syncUyuni.data.systems.systems} système(s) récupéré(s), {syncUyuni.data.systems.matched_hosts} lié(s) à l’inventaire ; {syncUyuni.data.errata.created} errata ajoutés, {syncUyuni.data.errata.updated} actualisés.</div>}
       <section className="metrics-grid">
         <StatCard label="Correctifs ouverts" item={{ value: open.length, status: 'ok' }} icon={Boxes} tone="danger" hint="findings" />
         <StatCard label="Critiques" item={{ value: critical, status: 'ok' }} icon={ShieldAlert} tone="danger" />
         <StatCard label="Élevés" item={{ value: high, status: 'ok' }} icon={TriangleAlert} tone="warning" />
         <StatCard label="Redémarrages requis" item={{ value: reboots, status: 'ok' }} icon={RefreshCw} tone="violet" />
-        <StatCard label="Systèmes Uyuni" item={{ value: uyuniSystems.data?.length ?? null, status: uyuniSystems.isError ? 'unknown' : uyuniSystems.data ? 'ok' : 'unknown' }} icon={Server} />
         <StatCard label="Total findings" item={{ value: data.length, status: 'ok' }} icon={Database} hint="toutes sources" />
       </section>
-      <article className="panel">
-        <div className="panel-heading"><div><p className="eyebrow">Uyuni</p><h2>Systèmes enregistrés</h2></div><span className="badge muted">{uyuniSystems.data?.length ?? 0}</span></div>
-        <DataTable
-          headers={['Hôte', 'ID Uyuni', 'Statut', 'Canaux', 'Dernière synchro']}
-          empty="Aucun système Uyuni synchronisé"
-          rows={(uyuniSystems.data ?? []).map((system) => [
-            <span className="strong" key={`h-${system.id}`}>{system.host_name}</span>,
-            <span className="mono" key={`id-${system.id}`}>{system.uyuni_system_id}</span>,
-            <StatusBadge value={system.status} key={`s-${system.id}`} />,
-            <span key={`c-${system.id}`}>{system.channels.join(', ') || '—'}</span>,
-            <span key={`d-${system.id}`}>{system.last_sync ? formatDateTime(system.last_sync) : '—'}</span>,
-          ])}
-        />
-      </article>
       <article className="panel">
         <div className="panel-heading"><div><p className="eyebrow">Vulnérabilités</p><h2>Correctifs détectés</h2></div><span className="badge muted">{data.length}</span></div>
         <DataTable
@@ -1699,7 +1675,7 @@ function Playbooks() {
 /* ------------------------------------------------------------------ */
 
 function useIntegrationTest(
-  name: 'wazuh' | 'uyuni' | 'ansible',
+  name: 'wazuh' | 'ansible',
   onSuccess: (state: IntegrationState) => void,
 ) {
   return useMutation({
@@ -1769,15 +1745,6 @@ function StackConfigurationEditor({ onSaved }: { onSaved: () => Promise<void> })
           </label>
           <label>URL du Dashboard Wazuh
             <input type="url" value={form.wazuh_dashboard_url} placeholder="https://wazuh.dashboard:5601" onChange={(event) => update('wazuh_dashboard_url', event.target.value)} />
-          </label>
-          <label>URL XML-RPC Uyuni
-            <input type="url" value={form.uyuni_api_url} placeholder="https://uyuni/rpc/api" onChange={(event) => update('uyuni_api_url', event.target.value)} />
-          </label>
-          <label>Adresse Uyuni (agents)
-            <input type="text" value={form.uyuni_server} placeholder="Nom d’hôte joignable par les hôtes cibles" onChange={(event) => update('uyuni_server', event.target.value)} />
-          </label>
-          <label>Port HTTPS Uyuni (agents)
-            <input type="number" min={1} max={65535} value={form.uyuni_server_port} onChange={(event) => update('uyuni_server_port', Number(event.target.value))} />
           </label>
         </div>
         {error && <div className="alert error">{error instanceof Error ? error.message : 'Impossible d’enregistrer la configuration.'}</div>}
@@ -1862,23 +1829,20 @@ function Settings() {
     refetchOnWindowFocus: true,
   })
   const { data, isLoading, isError } = integrationsQuery
-  const [tested, setTested] = useState<Partial<Record<'wazuh' | 'uyuni' | 'ansible', IntegrationState>>>({})
+  const [tested, setTested] = useState<Partial<Record<'wazuh' | 'ansible', IntegrationState>>>({})
   const sshKey = useQuery({ queryKey: ['ansible-public-key'], queryFn: api.ansiblePublicKey, retry: false })
-  const recordTest = (key: 'wazuh' | 'uyuni' | 'ansible') => (state: IntegrationState) => {
+  const recordTest = (key: 'wazuh' | 'ansible') => (state: IntegrationState) => {
     setTested((current) => ({ ...current, [key]: state }))
   }
   const testWazuh = useIntegrationTest('wazuh', recordTest('wazuh'))
-  const testUyuni = useIntegrationTest('uyuni', recordTest('uyuni'))
   const testAnsible = useIntegrationTest('ansible', recordTest('ansible'))
   const { mutate: runWazuhTest } = testWazuh
-  const { mutate: runUyuniTest } = testUyuni
   const { mutate: runAnsibleTest } = testAnsible
   const refresh = async () => {
     setTested({})
     await integrationsQuery.refetch()
     await Promise.allSettled([
       testWazuh.mutateAsync(),
-      testUyuni.mutateAsync(),
       testAnsible.mutateAsync(),
     ])
   }
@@ -1887,14 +1851,12 @@ function Settings() {
     if (!data || autoTestsStarted.current) return
     autoTestsStarted.current = true
     runWazuhTest()
-    runUyuniTest()
     runAnsibleTest()
-  }, [data, runWazuhTest, runUyuniTest, runAnsibleTest])
+  }, [data, runWazuhTest, runAnsibleTest])
   if (isLoading) return <Loading label="Chargement des intégrations…" />
   if (isError || !data) return <div className="alert error">Impossible de charger les paramètres.</div>
   const integrations = [
     { name: 'Wazuh', key: 'wazuh' as const, label: 'Détection & SIEM', icon: Radar, state: tested.wazuh ?? data.wazuh, mutation: testWazuh },
-    { name: 'Uyuni', key: 'uyuni' as const, label: 'Gestion des correctifs', icon: Boxes, state: tested.uyuni ?? data.uyuni, mutation: testUyuni },
     { name: 'Ansible', key: 'ansible' as const, label: 'Orchestration', icon: Cpu, state: tested.ansible ?? data.ansible, mutation: testAnsible },
   ]
   const statusText = (value: boolean | null) => value === null ? 'Non testé' : value ? 'Oui' : 'Non'
@@ -1931,11 +1893,9 @@ function Settings() {
         ].map((component) => {
           const testedState = component.key === 'wazuh-api'
             ? tested.wazuh ?? data.wazuh
-            : component.key === 'uyuni'
-              ? tested.uyuni ?? data.uyuni
-              : component.key === 'ansible'
-                ? tested.ansible ?? data.ansible
-                : undefined
+            : component.key === 'ansible'
+              ? tested.ansible ?? data.ansible
+              : undefined
           const reachable = testedState?.reachable ?? component.reachable
           const status = !component.configured
             ? 'À configurer'
@@ -1981,7 +1941,7 @@ function Settings() {
               {state.detail && <p className="integrations-detail">{state.detail}</p>}
               {mutation.isError && <div className="alert error" style={{ marginTop: 12 }}>{mutation.error instanceof Error ? mutation.error.message : 'Test impossible.'}</div>}
               <button className="secondary btn sm" style={{ marginTop: 16 }} disabled={mutation.isPending || (key !== 'ansible' && !state.configured)} onClick={() => mutation.mutate()}>
-                {mutation.isPending ? 'Test…' : key === 'ansible' ? 'Vérifier Ansible' : key === 'wazuh' ? 'Tester l’API Wazuh' : 'Tester XML-RPC Uyuni'}
+                {mutation.isPending ? 'Test…' : key === 'ansible' ? 'Vérifier Ansible' : 'Tester l’API Wazuh'}
               </button>
             </div>
           </article>
@@ -2006,7 +1966,7 @@ function Settings() {
           </div>
         </article>
       </div>
-      <p className="integration-help">Ansible est vérifié localement dans l’environnement de l’API (version uniquement, aucun playbook n’est exécuté). Wazuh et Uyuni sont testés via leurs API configurées. Aucune valeur synthétique n’est affichée : une source absente reste explicitement inconnue.</p>
+      <p className="integration-help">Ansible est vérifié localement dans l’environnement de l’API (version uniquement, aucun playbook n’est exécuté). Wazuh est testé via son API configurée. Aucune valeur synthétique n’est affichée : une source absente reste explicitement inconnue.</p>
     </div>
   )
 }

@@ -315,6 +315,12 @@ wazuh_agent_localfiles:
       command: netstat -tulpn | sed 's/\([[:alnum:]]\+\)\ \+[[:digit:]]\+\ \+[[:digit:]]\+\ \+\(.*\):\([[:digit:]]*\)\ \+\([0-9\.\:\*]\+\).\+\ \([[:digit:]]*\/[[:alnum:]\-]*\).*/\1 \2 == \3 == \4 \5/' | sort -k 4 -g | sed 's/ == \(.*\) ==/:\1/' | sed 1,2d
       alias: 'netstat listening ports'
       frequency: '360'
+    - format: 'syslog'
+      location: '/var/log/linsec360/openscap-status.log'
+    - format: 'full_command'
+      command: '/usr/local/bin/check_patching_status.sh'
+      alias: 'linsec360 patching status'
+      frequency: '3600'
   macos:
     - format: 'full_command'
       command: netstat -an | awk '{if ((/^(tcp|udp)/) && ($4 != "*.*") && ($5 == "*.*")) {print $1" "$4" "$5}}' | sort -u

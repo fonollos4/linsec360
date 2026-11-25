@@ -160,8 +160,9 @@ def components(
     settings,
     *,
     wazuh: IntegrationState,
-    uyuni: IntegrationState,
     ansible: IntegrationState,
+    # Kept for caller compatibility; Uyuni is no longer part of the stack.
+    uyuni: IntegrationState | None = None,
 ) -> list[StackComponentState]:
     api_url = getattr(settings, "wazuh_api_url", "")
     _, api_hostname = _url_details(api_url)
@@ -202,13 +203,6 @@ def components(
     manager_addresses = resolve_addresses(manager_hostname)
     if manager_hostname and not manager_addresses:
         manager_detail = f"{manager_detail} Le DNS n'a renvoyé aucune adresse."
-    uyuni_server = getattr(settings, "effective_uyuni_server", "")
-    uyuni_server_port = getattr(settings, "uyuni_server_port", 443)
-    uyuni_server_endpoint = (
-        f"{uyuni_server}:{uyuni_server_port}"
-        if uyuni_server and uyuni_server_port != 443
-        else uyuni_server
-    )
     result = [
         _database_component(settings),
         _redis_component(settings),
@@ -239,25 +233,6 @@ def components(
             name="Wazuh Dashboard",
             value=getattr(settings, "wazuh_dashboard_url", ""),
             configured=bool(getattr(settings, "wazuh_dashboard_url", "")),
-        ),
-        _url_component(
-            key="uyuni",
-            name="Uyuni XML-RPC",
-            value=getattr(settings, "uyuni_api_url", ""),
-            configured=uyuni.configured,
-            reachable=uyuni.reachable,
-            detail=uyuni.detail,
-        ),
-        StackComponentState(
-            key="uyuni-server",
-            name="Uyuni server (agents)",
-            configured=bool(uyuni_server),
-            endpoint=uyuni_server_endpoint or None,
-            detail=(
-                "Adresse configurée pour l'enregistrement des agents."
-                if uyuni_server
-                else "Adresse du serveur Uyuni non configurée pour les agents."
-            ),
         ),
     ]
 

@@ -1,0 +1,26 @@
+#!/bin/sh
+# Managed by LinSec360. Consumed by the Wazuh agent as a full_command check.
+# Prints one stable key/value line; never changes the system.
+set -u
+
+livepatch="inactive"
+if command -v systemctl >/dev/null 2>&1 &&
+   systemctl is-active --quiet canonical-livepatch.service 2>/dev/null; then
+    livepatch="active"
+fi
+
+updates="inactive"
+if command -v systemctl >/dev/null 2>&1 &&
+   systemctl is-active --quiet {{ patching_update_timer }} 2>/dev/null; then
+    updates="active"
+fi
+
+reboot_required="no"
+if [ -f /var/run/reboot-required ]; then
+    reboot_required="yes"
+elif command -v needs-restarting >/dev/null 2>&1 &&
+     needs-restarting -r >/dev/null 2>&1; then
+    reboot_required="yes"
+fi
+
+echo "linsec_patching livepatch=${livepatch} automatic_updates=${updates} reboot_required=${reboot_required}"

@@ -92,7 +92,9 @@ class Settings(BaseSettings):
     wazuh_timeout_seconds: float = 15.0
     wazuh_alert_index: str = "wazuh-alerts-*"
 
-    # Uyuni patch/repository control plane.
+    # Dormant Uyuni settings. Kept only so the legacy patching API endpoints
+    # remain importable; they are no longer injected into deployments and are
+    # not populated by Compose or the runtime configuration UI.
     uyuni_api_url: str = ""
     uyuni_server: str = ""
     uyuni_server_port: int = 443

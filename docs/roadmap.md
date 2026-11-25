@@ -9,23 +9,23 @@ state of the repository, not the target marketing description.
 | Layer | State | Notes |
 |---|---|---|
 | Orchestration | Implemented | FastAPI service with auth/RBAC, DB-backed playbooks, generated inventories, RQ/thread queue, cancel/retry/SSE, and a working Ansible role/config path. |
-| Supervision | Implemented core | `/api/v1/kpis/overview` and `/api/v1/kpis/history` combine and expose DB, Wazuh, OpenSCAP, Uyuni, hardening, and live-patch sources; snapshots are stored. Trend charts and reports remain. |
+| Supervision | Implemented core | `/api/v1/kpis/overview` and `/api/v1/kpis/history` combine and expose DB, Wazuh, OpenSCAP, hardening, and live-patch sources; snapshots are stored. Trend charts and reports remain. |
 | Detection/response | Implemented | Agent playbook, Wazuh API/indexer sync, alert storage/acknowledgement, vulnerability KPIs, and active-response configuration guards. |
-| Patching | Implemented | Uyuni systems/errata sync, registration and security-patch playbooks, CVE-driven findings, reboot gating. |
-| Hardening | Implemented | `taskengine/roles/hardening`, shared baseline, SELinux/auditd/systemd/PAM/SSH/sysctl controls, check mode and drift ingestion. |
-| OpenSCAP | Implemented | CIS Ubuntu/RHEL tailoring profiles, scan playbook, ARF parsing, rule-level findings and aggregate score. |
-| Uyuni | Implemented | Free patch/repository control plane; no KernelCare dependency. |
-| Live patching | Implemented | Native `klp` via `/sys/kernel/livepatch`, with `canonical-livepatch`/`kpatch` fallbacks; exposure days stay unknown unless supplied. |
+| Patching | Implemented (native) | `taskengine/roles/patching_option2` uses `dnf-automatic`, `unattended-upgrades`, optional Ubuntu Pro livepatch, and a Wazuh status check; reboots stay manual. |
+| Hardening | Implemented | `taskengine/roles/hardening` and `taskengine/roles/hardening_mac` cover the shared baseline, SELinux/AppArmor, auditd/systemd/PAM/SSH/sysctl controls, check mode and drift ingestion. |
+| OpenSCAP | Implemented | CIS Ubuntu/RHEL tailoring profiles, `taskengine/roles/hardening_openscap` with before/after XML+HTML reports, filtered remediation, ARF parsing, rule-level findings and aggregate score. |
+| Uyuni | Retired | Removed from Compose, runtime config, worker extra vars and UI. Legacy backend modules and patching endpoints remain dormant for import compatibility. |
+| Live patching | Implemented | Native `klp` via `/sys/kernel/livepatch`, with Ubuntu Pro `canonical-livepatch`/`kpatch` fallbacks; exposure days stay unknown unless supplied. |
 | Analytics | Covered by Wazuh | No OpenUBA deployment; correlation/behavioral views come from Wazuh Dashboard/Indexer. |
 
-Scope rule: Uyuni is the only new external component. KernelCare is removed
-because it is commercial. OpenUBA is not deployed; Wazuh Dashboard/Indexer is
-the supervision/SIEM and behavioral-analytics layer.
+Scope rule: KernelCare and Uyuni are retired. Native distribution patching and
+live-patching are the supported path. OpenUBA is not deployed; Wazuh
+Dashboard/Indexer is the supervision/SIEM and behavioral-analytics layer.
 
 ## Next functional product implementation
 
 The remaining product gap is not infrastructure coverage but operator workflow.
-Backend services exist for hosts, deployments, Wazuh, OpenSCAP, Uyuni,
+Backend services exist for hosts, deployments, Wazuh, OpenSCAP, patching,
 live-patching, alerts and audit, but each area must be exposed as a complete
 actionable web workflow.
 
@@ -33,8 +33,8 @@ actionable web workflow.
 - [ ] Complete playbook selection, check mode, approval and live deployment detail.
 - [ ] Add Wazuh synchronization, incident detail and operator-confirmed response.
 - [ ] Complete OpenSCAP launch, profile selection, comparison and remediation.
-- [ ] Validate Uyuni protocol/API and add real system/errata synchronization.
-- [ ] Complete Uyuni patch preview, approval, execution and reboot verification.
+- [ ] Validate Wazuh patch findings and native update status in operator workflows.
+- [ ] Complete patch preview, approval, execution and reboot verification.
 - [ ] Correlate Wazuh alerts, CVEs, OpenSCAP drift and patch findings.
 - [ ] Add scheduling and maintenance-window enforcement in operator workflows.
 - [ ] Add immutable workflow evidence for detection, action and verification.
@@ -122,19 +122,25 @@ drifted, with SELinux state visible.
 **Done when:** a scan produces a real score and rule-level findings stored in the
 platform.
 
-## Phase 4 — patching layer (Uyuni + klp)
+## Phase 4 — patching layer (native updates + livepatch)
 
-- [x] Uyuni client: system registration, channel inventory, package and errata
-      synchronization.
-- [x] `uyuni-register.yml` and `patch-security.yml` for traditional patch runs.
-- [x] Free native kernel live-patching state per host (kernel, state,
-      availability, optional exposure days).
-- [x] CVE/errata-driven findings from Wazuh and Uyuni.
-- [x] Maintenance windows and scheduled Uyuni patch jobs mapped to deployments.
+- [x] `taskengine/roles/patching_option2` configures `dnf-automatic` in security
+      mode with `apply_updates = yes` and `dnf-automatic.timer` on RedHat-family
+      hosts.
+- [x] Debian-family hosts use `unattended-upgrades` and
+      `apt-daily-upgrade.timer`; no reboot is forced during working hours.
+- [x] Ubuntu Pro livepatch uses the vaulted `ubuntu_pro_token` variable and
+      `pro enable livepatch --assume-yes` only when needed.
+- [x] `taskengine/roles/cleanup_uyuni` removes the retired Salt/Uyuni footprint
+      while guaranteeing that SSH stays reachable.
+- [x] CVE-driven findings from Wazuh and the Wazuh patching status command.
 - [x] Track patch compliance: pending, applied, failed, reboot required.
 
-**Done when:** package and kernel exposure are measurable from Uyuni/klp and
-patch runs are auditable.
+See [`taskengine-automation.md`](architecture/taskengine-automation.md) for the
+full baseline and verification commands.
+
+**Done when:** native security updates are enabled and auditable through Wazuh,
+SSH remains reachable, and reboots are never forced during working hours.
 
 ## Phase 5 — supervision and KPI model
 
@@ -143,7 +149,7 @@ Define and track, per host and globally:
 - agent coverage and disconnected agents
 - compliance score and failed rules (OpenSCAP)
 - open critical/high vulnerabilities and mean time to remediate
-- patch coverage, reboot-required hosts, kernel exposure days (Uyuni + klp)
+- patch coverage, reboot-required hosts, kernel exposure days (native updates + klp/livepatch)
 - hardening drift count (SELinux/audit/SSH)
 - deployment success rate, duration, and failure reasons
 - alert volume by severity and mean time to detect/respond

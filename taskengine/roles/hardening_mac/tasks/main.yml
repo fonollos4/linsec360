@@ -1,0 +1,85 @@
+---
+- name: Configure SELinux on RedHat family hosts
+  when: ansible_os_family == 'RedHat'
+  block:
+    - name: Select the SELinux tooling package names
+      ansible.builtin.set_fact:
+        hardening_mac_active_selinux_packages: >-
+          {{ hardening_mac_selinux_packages
+             if ansible_distribution_major_version | int >= 8
+             else hardening_mac_selinux_legacy_packages }}
+
+    - name: Install SELinux policy tooling
+      ansible.builtin.package:
+        name: "{{ hardening_mac_active_selinux_packages }}"
+        state: present
+
+    - name: Read the current SELinux mode
+      ansible.builtin.command: getenforce
+      register: hardening_mac_selinux_state
+      changed_when: false
+      failed_when: false
+
+    - name: Persist the SELinux enforcement mode
+      ansible.builtin.lineinfile:
+        path: "{{ hardening_mac_selinux_config }}"
+        regexp: '^SELINUX='
+        line: "SELINUX={{ hardening_mac_selinux_mode }}"
+        create: true
+        mode: '0644'
+        backup: false
+
+    - name: Persist the SELinux policy type
+      ansible.builtin.lineinfile:
+        path: "{{ hardening_mac_selinux_config }}"
+        regexp: '^SELINUXTYPE='
+        line: "SELINUXTYPE={{ hardening_mac_selinux_policy }}"
+        create: true
+        mode: '0644'
+        backup: false
+
+    - name: Apply SELinux enforcement immediately when permissive
+      ansible.builtin.command: setenforce 1
+      when:
+        - hardening_mac_selinux_state.rc == 0
+        - hardening_mac_selinux_state.stdout | trim == 'Permissive'
+      changed_when: true
+
+    - name: Report SELinux disablement that requires a reboot
+      ansible.builtin.debug:
+        msg: >-
+          SELinux is disabled at boot on {{ inventory_hostname }};
+          /etc/selinux/config is now set to enforcing and a reboot is required
+          for the change to take effect.
+      when:
+        - hardening_mac_selinux_state.rc == 0
+        - hardening_mac_selinux_state.stdout | trim == 'Disabled'
+      changed_when: false
+
+- name: Configure AppArmor on Debian family hosts
+  when: ansible_os_family == 'Debian'
+  block:
+    - name: Install AppArmor tooling
+      ansible.builtin.package:
+        name: "{{ hardening_mac_apparmor_packages }}"
+        state: present
+
+    - name: Enable and start AppArmor
+      ansible.builtin.service:
+        name: "{{ hardening_mac_apparmor_service }}"
+        state: started
+        enabled: true
+
+    - name: Find disabled critical AppArmor profiles
+      ansible.builtin.find:
+        paths: "{{ hardening_mac_apparmor_disable_dir }}"
+        patterns: "{{ hardening_mac_apparmor_critical_profiles }}"
+        file_type: link
+      register: hardening_mac_disabled_profiles
+
+    - name: Assert that critical AppArmor profiles are not disabled
+      ansible.builtin.assert:
+        that: hardening_mac_disabled_profiles.files | length == 0
+        fail_msg: >-
+          Critical AppArmor profiles are disabled on {{ inventory_hostname }}:
+          {{ hardening_mac_disabled_profiles.files | map(attribute='path') | join(', ') }}
